@@ -2271,7 +2271,9 @@ def browser(
     active tab of the last focused window; `settle_ms` waits for it to stop
     changing) as numbered elements: links, buttons, fields, tabs, options,
     with list items numbered ("2 of 20 in g3") so "the second result"
-    needs no site knowledge; 'click' and 'type' act on an `element` id of
+    needs no site knowledge; elements inside the page's frames (an embedded
+    sign-in or payment form) are listed too, with ids like "f12.e3";
+    'click' and 'type' act on an `element` id of
     a snapshot (`snapshot`, default the latest of that tab; `text`, and
     `submit=true` to press Enter); 'scroll' moves a page `direction`
     up|down|top|bottom. Element ids belong to one snapshot: after the page

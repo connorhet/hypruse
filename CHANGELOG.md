@@ -37,6 +37,9 @@ All notable changes to this project are documented here. The format follows
   module, which undid the stub that keeps it off.
 
 ### Changed
+- **`browser` snapshots reach into frames** (an embedded sign-in or payment
+  form), with a hypruse-browser that reads them: their elements have ids like
+  `f12.e3` and are clicked and typed into like any other.
 - **`browser open` leaves the human's view alone.** It opens the tab
   behind the active one, without focusing the browser, through the
   extension's `where: "background"`; `background=false` opens it in front.
