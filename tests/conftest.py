@@ -116,3 +116,14 @@ def no_live_accessibility(monkeypatch):
 
     monkeypatch.setattr(a11y, "connect", no_bus)
     monkeypatch.setattr(dbuswire, "connection", no_socket)
+
+
+@pytest.fixture(autouse=True)
+def no_browser_bridge(monkeypatch):
+    """No browser tool, unless a test says otherwise.
+
+    Same rule: whether the MCP server offers it depends on a native host
+    manifest under the developer's home, so without this the tool list
+    would differ between a machine with the extension and one without.
+    """
+    monkeypatch.setattr(server, "_browser_enabled", lambda: False)

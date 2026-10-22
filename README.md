@@ -209,7 +209,9 @@ with BrowserClient() as browser:
     browser.click(page["snapshot_id"], second["id"])
 ```
 
-A click names a snapshot, so a page that changed in between answers with an error rather than a click on whatever moved into that spot. The extension never reads what is in a field and refuses to type into password or card fields. [hyprsay](https://github.com/IlyasKhallouki/hyprsay) uses this to drive the browser by voice. An MCP `browser` tool on top of the same client is next.
+A click names a snapshot, so a page that changed in between answers with an error rather than a click on whatever moved into that spot. The extension never reads what is in a field and refuses to type into password or card fields. [hyprsay](https://github.com/IlyasKhallouki/hyprsay) uses this to drive the browser by voice.
+
+Once `hypruse browser install` has registered the host, the MCP server also offers a `browser` tool on the same client (it is left out of the tool list until then, so a session without the extension pays nothing for it). `tabs` lists every tab and says which one you can see; `snapshot` reads a page as numbered elements; `click`, `type` and `scroll` act on a snapshot's element ids in a tab without bringing it forward; `back`, `forward` and `close` act on a tab. `open` and `activate` make the browser take your focus (Hyprland can switch your workspace to it), so they are refused unless the call says `background=false`. Every acting result says whether your focus stayed put. Under `HYPRUSE_BACKGROUND=1` acting on a tab you can see is refused, under `HYPRUSE_CONFINE` every browser action is (a tab cannot be held to a window scope), and browser actions are not replayable, since element ids die with their page.
 
 ## Install
 

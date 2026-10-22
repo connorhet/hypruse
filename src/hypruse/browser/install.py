@@ -110,6 +110,14 @@ def uninstall(*, home: Path | None = None) -> list[Path]:
     return removed
 
 
+def registered(*, home: Path | None = None) -> bool:
+    """Whether the host is registered with any browser: a file check, cheap
+    enough for the MCP server to decide at startup whether to offer the
+    browser tool, unlike status(), which connects."""
+    home = home or Path.home()
+    return any(_manifest_path(home, b).exists() for b in BROWSERS)
+
+
 def status(*, home: Path | None = None, socket: Path | None = None) -> Status:
     home = home or Path.home()
     installed = tuple(b for b in BROWSERS if _manifest_path(home, b).exists())
