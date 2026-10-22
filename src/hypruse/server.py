@@ -20,7 +20,7 @@ import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from hypruse import __version__, a11y, events, hyprctl, journal, keymap, safety, session, trust
 from hypruse import background as bg
@@ -86,7 +86,9 @@ Background mode is automatic. An action on the window the human is in
 runs on their screen, as above. An action on any other window runs in the
 background, and the human's cursor, keyboard focus and workspace stay
 where they are: `click_ui` presses the control through its accessibility
-action, `keyboard(window=...)` types through the accessibility interface
+action (a tab through its tab list), `set_ui` sets a slider, picks a tab
+or combo box item, replaces a field's text or ticks a box the same way,
+`keyboard(window=...)` types through the accessibility interface
 or sends the keys to that window alone, and `launch` with no workspace
 opens the app on one of the agent's own workspaces ({workspaces}), out of
 the human's sight. Each result says which method it used and whether the
@@ -105,7 +107,8 @@ Background mode is GUARANTEED for this session (HYPRUSE_BACKGROUND=1).
 You work only on windows on the agent's own workspaces ({workspaces}),
 and nothing you do may move the human's cursor, take their keyboard focus
 or switch their workspace. `launch` opens apps there, `click_ui` presses
-controls through the accessibility tree, and `keyboard` needs window= and
+controls through the accessibility tree, `set_ui` sets values, selections,
+text and ticks through it, and `keyboard` needs window= and
 types into that window in the background. The pointer, workspace
 switches, focus_window, fullscreen and use_bind are refused, and
 background=false cannot override that. `launch` still runs its command as
@@ -1037,44 +1040,13 @@ def keyboard(
     return _acted(f"pressed {keys}{into}{note}", then)
 
 
-@journal.journaled("act")
-def click_ui(
-    name: str = "",
-    mark: int = 0,
-    window: str = "",
-    index: int = -1,
-    button: str = "left",
-    double: bool = False,
-    then: str = "none",
-    allow_auth: bool = False,
-    background: bool | None = None,
-) -> list[Any] | str:
-    """Click a control by its accessible NAME, or by a `mark` number from
-    the last `marks` capture, in ONE call: the control comes from the
-    accessibility tree, so no screenshot and no pixel estimation is spent.
-    On the window the human is in, the window is focused and the click
-    goes through the real pointer (visible cursor, same panic-kill
-    guarantees). On any other window it runs in the background: the
-    control's accessibility action presses it (a text field gets the app's
-    own focus), the human's cursor and focus stay put, and the result reads
-    the control back; a control with no action is refused there. When no
-    control matches, a name also finds an element in another role that has
-    an action (a web app's list row); if its action only focuses it, the
-    result says so and whether the app reports it focused, which does not
-    show what a key sent next will do: check with `ui`.
-    `background` true or false forces one way (false takes over the human's
-    screen). Pass exactly one of
-    `name` (matched against `window`'s controls, exact accessible name
-    preferred, substring otherwise) or `mark`. An ambiguous name returns
-    the candidates instead of guessing: disambiguate with `index` (0-based
-    into that list) or a more specific name. Falls back with a note when
-    the app exposes no tree (use screenshot + zoom + pointer then).
-    `then` ('desktop'|'screenshot'|'ui'|'none') appends the result;
-    'ui' shows the click's effect on the controls in the same call.
-    `allow_auth=true` overrides the refusal to click a system
-    authentication dialog."""
-    safety.touch("click_ui")
-    trust.guard_seat()
+def _resolve_control(
+    name: str, mark: int, window: str, index: int
+) -> tuple[dict[str, Any], dict[str, Any], str, int, int] | list[Any] | str:
+    """The control a `name` (in `window`) or a `mark` names, as (client,
+    control, description, x, y), shared by click_ui and set_ui so both find
+    the same control the same way. An ambiguous name, or a window with no
+    tree, returns what the tool should answer instead."""
     if bool(name) == bool(mark):
         raise ValueError("pass exactly one of `name` or `mark`")
     if mark:
@@ -1131,6 +1103,51 @@ def click_ui(
         x, y = e["x"], e["y"]
         desc = f"{e['role']} {e['name']!r}"
         control = e
+    return client, control, desc, x, y
+
+
+@journal.journaled("act")
+def click_ui(
+    name: str = "",
+    mark: int = 0,
+    window: str = "",
+    index: int = -1,
+    button: str = "left",
+    double: bool = False,
+    then: str = "none",
+    allow_auth: bool = False,
+    background: bool | None = None,
+) -> list[Any] | str:
+    """Click a control by its accessible NAME, or by a `mark` number from
+    the last `marks` capture, in ONE call: the control comes from the
+    accessibility tree, so no screenshot and no pixel estimation is spent.
+    On the window the human is in, the window is focused and the click
+    goes through the real pointer (visible cursor, same panic-kill
+    guarantees). On any other window it runs in the background: the
+    control's accessibility action presses it (a text field gets the app's
+    own focus), the human's cursor and focus stay put, and the result reads
+    the control back; a control with no action is refused there. When no
+    control matches, a name also finds an element in another role that has
+    an action (a web app's list row); if its action only focuses it, the
+    result says so and whether the app reports it focused, which does not
+    show what a key sent next will do: check with `ui`.
+    `background` true or false forces one way (false takes over the human's
+    screen). Pass exactly one of
+    `name` (matched against `window`'s controls, exact accessible name
+    preferred, substring otherwise) or `mark`. An ambiguous name returns
+    the candidates instead of guessing: disambiguate with `index` (0-based
+    into that list) or a more specific name. Falls back with a note when
+    the app exposes no tree (use screenshot + zoom + pointer then).
+    `then` ('desktop'|'screenshot'|'ui'|'none') appends the result;
+    'ui' shows the click's effect on the controls in the same call.
+    `allow_auth=true` overrides the refusal to click a system
+    authentication dialog."""
+    safety.touch("click_ui")
+    trust.guard_seat()
+    found = _resolve_control(name, mark, window, index)
+    if not isinstance(found, tuple):
+        return found
+    client, control, desc, x, y = found
     if bg.decide(client["address"] == _active_address(), background):
         if button != "left" or double:
             # the accessibility action is the control's primary one
@@ -1345,13 +1362,20 @@ def _click_in_background(
     # the reads that can refuse come before the dry run, so a rehearsal
     # refuses what the real run would
     bus = a11y.connect()
+    pick = None  # (container, index): a tab or row its container selects
     if not is_text and not a11y.has_action(bus, svc, path):
-        bg.refuse("this control has no accessibility action")
+        # a tab offers no action of its own (GTK's notebook tabs): its tab
+        # list picks it through the Selection interface instead
+        pick = a11y.selection_of(bus, svc, path)
+        if pick is None:
+            bg.refuse("this control has no accessibility action")
     # an action that only focuses (Qt WebEngine's list rows offer just
     # SetFocus) does not press: the result must not say it did
-    action = "" if is_text else a11y.action_name(bus, svc, path)
+    action = "" if is_text or pick else a11y.action_name(bus, svc, path)
     focus_only = "focus" in action.lower()
     how = f"its accessibility action {action!r}" if focus_only else "its accessibility action"
+    if pick is not None:
+        how = "its container's accessibility selection"
     if is_text:
         kit, version = a11y.toolkit(bus, svc)
         kit = kit.lower()
@@ -1370,15 +1394,27 @@ def _click_in_background(
                 instead,
             )
     if journal.dry_run():
-        verb_ = "focus" if is_text or focus_only else "press"
+        verb_ = "select" if pick else "focus" if is_text or focus_only else "press"
         return _acted(f"{_DRY} {verb_} {desc} in {cls} through {how}",
                       then, window=client["address"])
     seat = _seat_now()
     before = a11y.current_value(bus, svc, path)
-    ok = a11y.grab_focus(bus, svc, path) if is_text else a11y.do_action(bus, svc, path)
+    if pick is not None:
+        ok = a11y.select_child(bus, *pick[0], pick[1])
+    elif is_text:
+        ok = a11y.grab_focus(bus, svc, path)
+    else:
+        ok = a11y.do_action(bus, svc, path)
     if not ok:
         bg.refuse("the app did not accept the accessibility action")
     time.sleep(0.05)  # let the app apply it before reading back
+    if pick is not None:
+        untouched, warning = _seat_report(seat)
+        paren = "no pointer, the human's focus untouched" if untouched else "no pointer"
+        now = a11y.selected_names(bus, *pick[0])
+        seen = f"; now selected: {', '.join(map(repr, now))}" if now else ""
+        return _acted(f"selected {desc} through {how} ({paren}) in {cls}{seen}{warning}",
+                      then, window=client["address"], fallback=False)
     verb = "focused" if is_text or focus_only else "pressed"
     untouched, warning = _seat_report(seat)
     paren = "no pointer, the human's focus untouched" if untouched else "no pointer"
@@ -1399,6 +1435,229 @@ def _click_in_background(
         elif before:
             msg += "; no change seen"
     return _acted(msg + warning, then, window=client["address"], fallback=False)
+
+
+def _set_refuse(what: str, instead: str = "") -> NoReturn:
+    """set_ui's refusal: it has no pointer path to fall back on, so it says
+    what would do the job instead rather than offering background=false."""
+    raise trust.TrustError(f"{what}, so set_ui cannot do it" + (f": {instead}" if instead else ""))
+
+
+def _reading(value: dict[str, Any]) -> str:
+    return ", ".join(f"{k}={str(v).lower() if isinstance(v, bool) else repr(v)}"
+                     for k, v in value.items())
+
+
+@journal.journaled("act")
+def set_ui(
+    name: str = "",
+    mark: int = 0,
+    window: str = "",
+    index: int = -1,
+    value: float | None = None,
+    select: str = "",
+    text: str | None = None,
+    checked: bool | None = None,
+    action: str = "",
+    then: str = "none",
+    allow_auth: bool = False,
+) -> list[Any] | str:
+    """Change a control through its accessibility interface: no pointer, no
+    keyboard, and no focus change, in ANY window (the human's or one in the
+    background), so prefer it over clicking and dragging when it applies.
+    Name the control as for click_ui (`name` in `window`, `index` for an
+    ambiguous name, or a `mark`) and pass exactly ONE of:
+    `value`: move a slider or spin button to this number (its range is
+    checked first); `select`: pick the item with this name in a tab list,
+    combo box or list (with no `name`, the item is looked for anywhere in
+    `window`, since tab lists are often unnamed); `text`: replace a text
+    field's whole contents (keyboard types at the caret instead);
+    `checked`: tick (true) or untick (false) a check box or toggle, pressing
+    it only when it is not already that way; `action`: run one of the
+    control's named accessibility actions ("activate", "menu.popup"); an
+    unknown name returns the ones it has.
+    The result reads the control back from the accessibility tree. Not every
+    toolkit implements each interface (GTK 4's dropdowns expose no items,
+    its check boxes no action): the refusal says what is missing, and
+    click_ui or pointer is the way then. A password field refuses `text`
+    unless `allow_auth=true`. `then` ('desktop'|'screenshot'|'ui'|'none')
+    appends the result."""
+    safety.touch("set_ui")
+    trust.guard_seat()
+    given = [k for k, v in (("value", value), ("select", select or None), ("text", text),
+                            ("checked", checked), ("action", action or None)) if v is not None]
+    if len(given) != 1:
+        raise ValueError("pass exactly one of `value`, `select`, `text`, `checked` or `action`")
+    kind = given[0]
+    if kind == "select" and not name and not mark:
+        client = _resolve_window(window)
+        svc = path = None  # the item is looked for in the whole window
+        desc = ""
+    else:
+        found = _resolve_control(name, mark, window, index)
+        if not isinstance(found, tuple):
+            return found
+        client, control, desc, _x, _y = found
+        if control.get("_unsure"):
+            _set_refuse(_UNSURE.format(addr=client["address"], cls=client.get("class", ""))
+                        + ", and the change could land in the other window")
+        svc, path = control.get("_svc"), control.get("_path")
+        if not isinstance(svc, str) or not isinstance(path, str):
+            _set_refuse("this control was not resolved through the accessibility tree")
+    trust.guard_client(client)
+    trust.guard_auth_client(client, allow_auth)
+    trust.guard_session_lock(True, allow_auth)
+    bus = a11y.connect()
+    if svc is None:
+        app = a11y.app_for_pid(bus, client.get("pid"), client.get("title", ""),
+                               tuple(client["size"]))
+        frame = _proven_frame(bus, client, app)
+        if frame is None:
+            cls = client.get("class", "the window")
+            if app is None:
+                _set_refuse(f"{cls} exposes no accessibility tree",
+                            "use screenshot + zoom + pointer")
+            _set_refuse(_UNSURE.format(addr=client["address"], cls=cls))
+        svc, path = frame
+    setter = {"value": _set_value, "select": _set_select, "text": _set_text,
+              "checked": _set_checked, "action": _set_action}[kind]
+    arg = {"value": value, "select": select, "text": text, "checked": checked,
+           "action": action}[kind]
+    return setter(bus, client, svc, path, desc, arg, then, allow_auth)
+
+
+def _set_done(client: dict[str, Any], msg: str, seat: Any, then: str) -> list[Any] | str:
+    untouched, warning = _seat_report(seat)
+    paren = " (no pointer, the human's focus untouched)" if untouched else " (no pointer)"
+    head, _, tail = msg.partition(";")
+    out = f"{head}{paren} in {client.get('class', '')}" + (f";{tail}" if tail else "")
+    if not any(c.get("address") == client["address"] for c in hyprctl.query("clients")):
+        out += "; the window closed"
+    return _acted(out + warning, then, window=client["address"], fallback=False)
+
+
+def _set_value(bus, client, svc, path, desc, value, then, allow_auth):
+    span = a11y.value_range(bus, svc, path)
+    if span is None:
+        _set_refuse(f"{desc} has no accessibility value to set (it is not a slider or "
+                    "spin button, or its toolkit does not expose one)",
+                    "use click_ui or pointer")
+    low, high, current = span
+    if high > low and not low <= value <= high:
+        _set_refuse(f"{value:g} is outside the range of {desc} ({low:g} to {high:g})")
+    if journal.dry_run():
+        return _acted(f"{_DRY} set {desc} from {current:g} to {value:g} through its "
+                      "accessibility value", then, window=client["address"])
+    seat = _seat_now()
+    if not a11y.set_value(bus, svc, path, value):
+        _set_refuse("the app did not accept the value")
+    time.sleep(0.05)  # let the app apply it before reading back
+    after = a11y.current_value(bus, svc, path)
+    seen = f"; now: {_reading(after)}" if after else ""
+    if after.get("value") is not None and float(after["value"]) != float(value):
+        seen += " (the app adjusted the value it was given)"
+    return _set_done(client, f"set {desc} to {value:g} through its accessibility value{seen}",
+                     seat, then)
+
+
+def _set_select(bus, client, svc, path, desc, item, then, allow_auth):
+    cands, truncated = a11y.selectable(bus, svc, path, item)
+    where = desc or client.get("class", "the window")
+    if not cands:
+        cut = (f" (it stopped after reading {a11y.WALK_BUDGET} elements, so it may lie "
+               "beyond them)" if truncated else "")
+        _set_refuse(f"no item named like {item!r} in a tab list, combo box or list in "
+                    f"{where}{cut}; a dropdown that exposes no items needs click_ui or pointer",
+                    "read the controls with ui")
+    if len(cands) > 1:
+        public = [{"name": c["name"], "role": c["role"], "selected": c["selected"]}
+                  for c in cands]
+        return [_text(f"{item!r} matches {len(cands)} items; call again with the exact name, "
+                      "or a `name` naming the list it is in:"), _text(json.dumps(public))]
+    c = cands[0]
+    what = f"{c['role']} {c['name']!r}"
+    if journal.dry_run():
+        return _acted(f"{_DRY} select {what} in {where} through its container's "
+                      "accessibility selection", then, window=client["address"])
+    seat = _seat_now()
+    if not a11y.select_child(bus, *c["container"], c["index"]):
+        _set_refuse("the app did not accept the selection")
+    time.sleep(0.05)
+    now = a11y.selected_names(bus, *c["container"])
+    seen = f"; now selected: {', '.join(map(repr, now))}" if now else ""
+    if now and c["name"] not in now:
+        seen += " (not the item asked for)"
+    return _set_done(client, f"selected {what} through its container's accessibility "
+                     f"selection{seen}", seat, then)
+
+
+def _set_text(bus, client, svc, path, desc, text, then, allow_auth):
+    role = a11y._role_num(bus, svc, path)
+    if "EditableText" not in a11y._interfaces(bus, svc, path):
+        _set_refuse(f"{desc} is not an editable text field", "use keyboard to type into it")
+    secret = role == a11y.PASSWORD_ROLE
+    if secret and not allow_auth:
+        raise trust.TrustError(
+            f"{desc} is a password field; refusing to set it. Pass allow_auth=true only if "
+            "a human intends this credential entry.")
+    if journal.dry_run():  # the text never goes into a result line: the journal keeps them
+        return _acted(f"{_DRY} replace the contents of {desc} with {len(text)} characters "
+                      "through its accessibility text", then, window=client["address"])
+    seat = _seat_now()
+    if not a11y.set_text(bus, svc, path, text):
+        _set_refuse("the app did not accept the text")
+    time.sleep(0.05)
+    if secret:
+        seen = "not read back"
+    else:
+        now = a11y.text_of(bus, svc, path)
+        seen = (f"the field now holds the given text ({len(now)} characters)" if now == text
+                else f"the field holds other text than given ({len(now)} characters)")
+    return _set_done(client, f"replaced the contents of {desc} through its accessibility "
+                     f"text; {seen}", seat, then)
+
+
+def _set_checked(bus, client, svc, path, desc, checked, then, allow_auth):
+    state = a11y.current_value(bus, svc, path).get("checked")
+    if state is None:
+        _set_refuse(f"{desc} is not a check box or toggle", "use click_ui")
+    want = "ticked" if checked else "unticked"
+    if state == checked:
+        return _acted(f"{desc} is already {want}; nothing pressed", then,
+                      window=client["address"], fallback=False)
+    if not a11y.has_action(bus, svc, path):
+        _set_refuse(f"{desc} offers no accessibility action to toggle it (GTK 4's check "
+                    "boxes do not)", "use click_ui on the window the human is in, or pointer")
+    if journal.dry_run():
+        return _acted(f"{_DRY} press {desc} so it is {want}", then, window=client["address"])
+    seat = _seat_now()
+    if not a11y.do_action(bus, svc, path):
+        _set_refuse("the app did not accept the accessibility action")
+    time.sleep(0.05)
+    now = a11y.current_value(bus, svc, path).get("checked")
+    seen = "" if now == checked else f"; it still reads checked={str(now).lower()}"
+    return _set_done(client, f"pressed {desc} so it is {want} through its accessibility "
+                     f"action{seen}", seat, then)
+
+
+def _set_action(bus, client, svc, path, desc, action, then, allow_auth):
+    names = a11y.actions(bus, svc, path)
+    match = [i for i, n in enumerate(names) if n.lower() == action.lower()]
+    if not match:
+        offered = ", ".join(map(repr, names)) if names else "none"
+        _set_refuse(f"{desc} has no action {action!r} (it offers: {offered})")
+    if journal.dry_run():
+        return _acted(f"{_DRY} run {desc}'s accessibility action {names[match[0]]!r}",
+                      then, window=client["address"])
+    seat = _seat_now()
+    before = a11y.current_value(bus, svc, path)
+    if not a11y.do_action(bus, svc, path, match[0]):
+        _set_refuse("the app did not accept the accessibility action")
+    time.sleep(0.05)
+    after = a11y.current_value(bus, svc, path)
+    seen = f"; now: {_reading(after)}" if after and after != before else ""
+    return _set_done(client, f"ran {desc}'s accessibility action {names[match[0]]!r}{seen}",
+                     seat, then)
 
 
 def _seat_now() -> tuple[Any, Any] | None:
@@ -2122,6 +2381,7 @@ _SEQ_HANDLERS = {
     "hypr": hypr,
     "wait_for": wait_for,
     "click_ui": click_ui,
+    "set_ui": set_ui,
 }
 
 # Only STRUCTURAL changes invalidate a half-run plan. Focus changes
@@ -2489,6 +2749,7 @@ _TITLES = {
     "pointer": "Mouse",
     "keyboard": "Keyboard",
     "click_ui": "Click a control by name",
+    "set_ui": "Set a control by name",
     "hypr": "Windows and workspaces",
     "launch": "Launch an app",
     "use_bind": "Run a keybind",
@@ -2513,7 +2774,7 @@ def build_app() -> Any:
             title=_TITLES[name], readOnlyHint=True, openWorldHint=False
         ))(observe_tool)
     if not READONLY:
-        acting = [pointer, keyboard, click_ui, hypr, launch, use_bind, sequence]
+        acting = [pointer, keyboard, click_ui, set_ui, hypr, launch, use_bind, sequence]
         if CLIPBOARD:
             acting.append(clipboard)
         for acting_tool in acting:

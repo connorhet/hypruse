@@ -10,7 +10,7 @@ Bare `hypruse` (or `hypruse serve`) runs the MCP stdio server instead.
 
 - [Conventions](#conventions): output, `--json`, errors, exit codes, captures, stdin, shared flags, bounds
 - Observation (work in read-only mode): [desktop](#desktop), [screenshot](#screenshot), [zoom](#zoom), [ui](#ui), [marks](#marks), [binds](#binds), [wait_for](#wait_for)
-- Acting (exit 3 under HYPRUSE_READONLY): [pointer](#pointer), [keyboard](#keyboard), [click_ui](#click_ui), [hypr](#hypr), [launch](#launch), [use_bind](#use_bind), [sequence](#sequence), [clipboard](#clipboard)
+- Acting (exit 3 under HYPRUSE_READONLY): [pointer](#pointer), [keyboard](#keyboard), [click_ui](#click_ui), [set_ui](#set_ui), [hypr](#hypr), [launch](#launch), [use_bind](#use_bind), [sequence](#sequence), [clipboard](#clipboard)
 - Owner (the human's tools, not the agent's): [doctor](#doctor), [init](#init), [stop](#stop), [journal](#journal), [replay](#replay), [skill](#skill), [serve and --version](#serve-and---version)
 
 ## Conventions
@@ -34,7 +34,7 @@ compact JSON.
 | 1 | runtime error: IPC down, window address gone, grim or wtype failed, no such bind, Lua bind |
 | 2 | usage: bad flag, missing argument, malformed JSON |
 | 3 | refused by a trust layer (confinement scope, authentication dialog, password field, locked session, launcher keyboard grab, strict-mode seat contention), by background mode (something the background cannot do, with what works instead), or a mode gate (HYPRUSE_READONLY for acting verbs, HYPRUSE_CLIPBOARD unset for clipboard) |
-| 4 | ran but produced no result: wait_for timeout, launch saw no window, ui or marks found no accessibility tree or no elements, click_ui ambiguous or no tree, sequence stopped early |
+| 4 | ran but produced no result: wait_for timeout, launch saw no window, ui or marks found no accessibility tree or no elements, click_ui or set_ui ambiguous or no tree, sequence stopped early |
 
 **Captures** (`screenshot`, `zoom`, `marks`) never print bytes. Line 1 is the
 saved file path, line 2 the coordinate metadata as compact JSON: `geometry`
@@ -437,6 +437,45 @@ another window of the same title or size (the tree cannot tell them apart),
 focusing a field in GTK 4 (it does not allow it), and focusing a GTK 2 or 3
 field (or one whose toolkit cannot be read) while Hyprland's
 `focus_on_activate` is on for that window.
+A tab, which offers no action of its own, is selected through its tab list
+instead (`selected page tab 'About' through its container's accessibility
+selection ...; now selected: 'About'`).
+
+## set_ui
+
+```
+hypruse set_ui NAME [--window ADDR] [--index I] CHANGE [--allow-auth]   (alias: set-ui)
+hypruse set_ui --mark N CHANGE [--allow-auth]
+hypruse set_ui --select ITEM --window ADDR
+```
+
+`CHANGE` is exactly one of `--value N` (a slider or spin button; its range
+is checked first), `--select ITEM` (an item in a tab list, combo box or
+list; with no `NAME` it is looked for anywhere in the window), `--text TEXT`
+(replace a field's whole contents; `-` reads stdin), `--checked true|false`
+(pressed only when the box is not already that way), or `--action NAME` (one
+of the control's named accessibility actions). Plus `--then`, `--dry-run`,
+`--json`. There is no `--background`: set_ui never uses the pointer or the
+keyboard, so it is the same in any window.
+
+Output:
+
+```
+set slider 'Volume' to 45 through its accessibility value (no pointer, the human's focus untouched) in app; now: value=45.0, percent=45
+selected menu item 'Green' through its container's accessibility selection (no pointer, the human's focus untouched) in app; now selected: 'Green'
+replaced the contents of text 'Title' through its accessibility text (no pointer, the human's focus untouched) in app; the field now holds the given text (14 characters)
+check box 'Agree' is already ticked; nothing pressed
+```
+
+A value the app clamped or rounded ends `(the app adjusted the value it was
+given)`; a selection that landed elsewhere ends `(not the item asked for)`.
+Text is never repeated in a result. An item name that matches several items
+prints them (exit 4). Refused (exit 3): a value outside the control's range,
+a control without the interface the change needs (the refusal names what
+offers instead: an unknown `--action` lists the actions it has), a password
+field for `--text` without `--allow-auth`, a box with no action to toggle
+(GTK 4's check boxes), and a window the tree cannot tell apart from another
+of the same app.
 
 An ambiguous name prints the tool's note and the candidates, and exits 4
 (`index=N` in the note is `--index N` on the CLI):
@@ -595,7 +634,7 @@ Plus `--background` / `--foreground` (applied to every pointer, keyboard and
 click_ui step that does not set its own `background`), `--then` (default
 `desktop`), `--dry-run`, `--json`. `STEPS` is an
 inline JSON array, `@file.json`, or `-` for stdin. Each step is
-`{"op": "pointer"|"keyboard"|"click_ui"|"hypr"|"wait_for", ...that verb's
+`{"op": "pointer"|"keyboard"|"click_ui"|"set_ui"|"hypr"|"wait_for", ...that verb's
 MCP arguments}`:
 
 ```json

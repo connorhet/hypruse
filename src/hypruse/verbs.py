@@ -34,9 +34,11 @@ from typing import Any
 from hypruse import __version__
 
 OBSERVE = ("desktop", "screenshot", "zoom", "ui", "marks", "binds", "wait_for")
-ACT = ("pointer", "keyboard", "click_ui", "hypr", "launch", "use_bind", "sequence")
+ACT = ("pointer", "keyboard", "click_ui", "set_ui", "hypr", "launch", "use_bind", "sequence")
 OWNER = ("doctor", "init", "stop", "journal", "replay", "skill")
-ALIASES = {"click-ui": "click_ui", "use-bind": "use_bind", "wait-for": "wait_for"}
+ALIASES = {
+    "click-ui": "click_ui", "set-ui": "set_ui", "use-bind": "use_bind", "wait-for": "wait_for",
+}
 THEN = ("none", "desktop", "ui", "screenshot")
 HYPR_ACTIONS = (
     "workspace", "focus_window", "move_window", "close_window", "fullscreen", "toggle_floating",
@@ -188,6 +190,25 @@ def build_parser() -> argparse.ArgumentParser:
     acting(v, auth=True)
     placement(v)
 
+    v = verb("set_ui", "set a control's value, selection, text or tick by accessible name",
+             ("set-ui",))
+    v.add_argument("name", nargs="?", default=_S, metavar="NAME")
+    v.add_argument("--mark", type=int, default=_S, metavar="N", help="from the last marks call")
+    v.add_argument("--window", default=_S, metavar="ADDR")
+    v.add_argument("--index", type=int, default=_S, metavar="I",
+                   help="pick among ambiguous candidates (0-based)")
+    g = v.add_mutually_exclusive_group(required=True)
+    g.add_argument("--value", type=float, default=_S, metavar="N",
+                   help="move a slider or spin button to N")
+    g.add_argument("--select", default=_S, metavar="ITEM",
+                   help="pick ITEM in a tab list, combo box or list")
+    g.add_argument("--text", default=_S, metavar="TEXT",
+                   help="replace a field's contents ('-' reads stdin)")
+    g.add_argument("--checked", choices=("true", "false"), default=_S,
+                   help="tick or untick a check box or toggle")
+    g.add_argument("--action", default=_S, metavar="NAME", help="run a named action")
+    acting(v, auth=True)
+
     v = verb("hypr", "workspace and window operations over IPC")
     hs = v.add_subparsers(dest="action", metavar="ACTION")
     hs.required = True
@@ -315,6 +336,15 @@ def normalize(verb: str, ns: argparse.Namespace) -> tuple[dict[str, Any], dict[s
     elif verb == "click_ui":
         if ("name" in d) == ("mark" in d):
             raise Usage("pass NAME or --mark N, not both, not neither")
+    elif verb == "set_ui":
+        if "name" in d and "mark" in d:
+            raise Usage("pass NAME or --mark N, not both")
+        if "name" not in d and "mark" not in d and "select" not in d:
+            raise Usage("pass NAME or --mark N (only --select may name an item alone)")
+        if "text" in d:
+            d["text"] = _stdin_text(d["text"])
+        if "checked" in d:
+            d["checked"] = d["checked"] == "true"
     elif verb == "launch":
         words = d.pop("command")
         d["command"] = words[0] if len(words) == 1 else shlex.join(words)
@@ -502,14 +532,19 @@ def exit_for(tool: str, result: Any) -> int:
         if tool in ("ui", "marks"):
             return EXIT_NORESULT  # no tree, no matching elements, or the read failed
         if tool == "click_ui":  # a plain string is either the click, or why there was none
-            delivered = result.startswith(("clicked ", "pressed ", "focused "))
+            delivered = result.startswith(("clicked ", "pressed ", "focused ", "selected "))
             return EXIT_OK if delivered else EXIT_NORESULT
+        if tool == "set_ui":  # the change, or a window with no tree to make it in
+            delivered = result.startswith(("set ", "selected ", "replaced ", "pressed ", "ran "))
+            return EXIT_OK if delivered or " is already " in result else EXIT_NORESULT
         if tool == "sequence" and ": stopped after" in result.split("\n", 1)[0]:
             return EXIT_NORESULT
         return EXIT_OK
     if isinstance(result, list) and result and _is_block(result[0]):
         head = getattr(result[0], "text", "") or ""
-        if tool == "click_ui" and " is ambiguous (" in head:
+        if tool in ("click_ui", "set_ui") and " is ambiguous (" in head:
+            return EXIT_NORESULT
+        if tool == "set_ui" and " items; call again " in head:
             return EXIT_NORESULT
         if tool == "sequence" and ": stopped after" in head.split("\n", 1)[0]:
             return EXIT_NORESULT

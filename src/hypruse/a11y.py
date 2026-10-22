@@ -40,6 +40,7 @@ _COMPONENT = "org.a11y.atspi.Component"
 _ACTION = "org.a11y.atspi.Action"
 _TEXT = "org.a11y.atspi.Text"
 _VALUE = "org.a11y.atspi.Value"
+_SELECTION = "org.a11y.atspi.Selection"
 _REGISTRY_SVC = "org.a11y.atspi.Registry"
 _ROOT = "/org/a11y/atspi/accessible/root"
 _DBUS = ("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus")
@@ -50,6 +51,7 @@ COORD_WINDOW = 1  # ATSPI_COORD_TYPE_WINDOW: extents relative to the toplevel
 _STATE_ENABLED, _STATE_SENSITIVE, _STATE_SHOWING, _STATE_VISIBLE = 8, 24, 25, 30
 _STATE_FOCUSED = 12
 _STATE_EDITABLE = 7
+_STATE_SELECTED = 23
 
 # AtspiRelationType: a label names a field through these
 _REL_LABEL_FOR, _REL_LABELLED_BY = 1, 2
@@ -108,6 +110,8 @@ def _busctl(address: str, verb: str, *args: str) -> Any:
         raise A11yError(f"busctl {verb} timed out (unresponsive app?)") from exc
     if proc.returncode != 0:
         raise CallRefused(f"busctl {verb} failed: {proc.stderr.strip() or proc.stdout.strip()}")
+    if verb == "set-property":  # it answers nothing on success
+        return {}
     try:
         return json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
@@ -186,6 +190,21 @@ class Bus:
         if self._wire() is None:
             return _busctl(self.address, "get-property", svc, path, iface, name)["data"]
         return self.call(svc, path, "org.freedesktop.DBus.Properties", "Get", "ss", iface, name)[0]
+
+    def set_prop(self, svc: str, path: str, iface: str, name: str, sig: str, value: Any) -> None:
+        """Write a property. `sig` is the value's one D-Bus type ("d" for a
+        number), which goes out inside the variant Properties.Set takes."""
+        wire = self._wire()
+        if wire is None:
+            _busctl(self.address, "set-property", svc, path, iface, name, sig, str(value))
+            return
+        try:
+            wire.call(svc, path, "org.freedesktop.DBus.Properties", "Set", "ssv",
+                      [iface, name, (sig, value)])
+        except dbuswire.CallError as exc:
+            raise CallRefused(f"setting {name} failed: {exc}") from None
+        except dbuswire.DBusError as exc:
+            raise A11yError(f"setting {name} failed: {exc}") from None
 
     def conn_pid(self, svc: str) -> int | None:
         try:
@@ -793,3 +812,145 @@ def do_action(bus: Bus, svc: str, path: str, index: int = 0) -> bool:
         return bool(bus.call(svc, path, _ACTION, "DoAction", "i", str(index))[0])
     except (CallRefused, IndexError):
         return False
+
+
+def value_range(bus: Bus, svc: str, path: str) -> tuple[float, float, float] | None:
+    """(minimum, maximum, current) of a control with the Value interface (a
+    slider, a spin button), or None when it has none or it cannot be read."""
+    if "Value" not in _interfaces(bus, svc, path):
+        return None
+    try:
+        return (float(bus.prop(svc, path, _VALUE, "MinimumValue")),
+                float(bus.prop(svc, path, _VALUE, "MaximumValue")),
+                float(bus.prop(svc, path, _VALUE, "CurrentValue")))
+    except (CallRefused, ValueError, TypeError):
+        return None
+
+
+def set_value(bus: Bus, svc: str, path: str, value: float) -> bool:
+    """Move a slider or spin button to `value` by writing its CurrentValue,
+    with no pointer and no keyboard. The caller reads it back: a toolkit can
+    accept the write and clamp or round it."""
+    journal.refuse_if_dry("set_value")
+    try:
+        bus.set_prop(svc, path, _VALUE, "CurrentValue", "d", float(value))
+        return True
+    except CallRefused:
+        return False
+
+
+def set_text(bus: Bus, svc: str, path: str, text: str) -> bool:
+    """Replace a field's whole contents with `text` (EditableText's
+    SetTextContents), where insert_text only adds at the caret."""
+    journal.refuse_if_dry("set_text")
+    try:
+        return bool(bus.call(svc, path, _EDITABLE, "SetTextContents", "s", text)[0])
+    except (CallRefused, IndexError):
+        return False
+
+
+def actions(bus: Bus, svc: str, path: str) -> list[str]:
+    """The names of every action the element offers, in index order, so a
+    caller can invoke one by name ("activate", "menu.popup") rather than
+    the first; [] when it has none."""
+    if "Action" not in _interfaces(bus, svc, path):
+        return []
+    try:
+        n = int(bus.prop(svc, path, _ACTION, "NActions"))
+    except (CallRefused, ValueError, TypeError):
+        return []
+    return [action_name(bus, svc, path, i) for i in range(n)]
+
+
+def _index_in_parent(bus: Bus, svc: str, path: str) -> int:
+    try:
+        return int(bus.call(svc, path, _ACCESSIBLE, "GetIndexInParent")[0])
+    except (CallRefused, IndexError, ValueError):
+        return -1
+
+
+def _parent(bus: Bus, svc: str, path: str) -> tuple[str, str] | None:
+    try:
+        ps, pp = bus.prop(svc, path, _ACCESSIBLE, "Parent")
+    except (CallRefused, ValueError, TypeError):
+        return None
+    return (str(ps), str(pp)) if pp and pp != "/org/a11y/atspi/null" else None
+
+
+# The unnamed list a container keeps its items in: GTK 3's combo box lists
+# its choices in a menu that is its only child, so they sit one level down
+_ITEM_HOLDERS = frozenset({33, 31})  # menu, list
+
+
+def _selection_items(bus: Bus, svc: str, path: str) -> list[tuple[str, str]]:
+    """The items a Selection container's SelectChild indexes: its children,
+    or those of the unnamed menu or list that is its only child."""
+    kids = _children(bus, svc, path)
+    if len(kids) == 1 and not _name(bus, *kids[0]) and _role_num(bus, *kids[0]) in _ITEM_HOLDERS:
+        return _children(bus, *kids[0])
+    return kids
+
+
+def selectable(
+    bus: Bus, root_svc: str, root_path: str, item: str, max_nodes: int = WALK_BUDGET
+) -> tuple[list[dict[str, Any]], bool]:
+    """(candidates, truncated): every item named like `item` (an exact
+    name, case-insensitive, else a substring) in a container under `root`
+    that has the Selection interface, which is how a tab list, a combo box
+    or a list picks one of its items with no pointer. Each candidate names
+    the item, its role, the container and the index SelectChild takes.
+    Items are found under their container even when they are not drawn (a
+    closed combo box's choices), and each item once, since GTK 3 lists a
+    combo box's choices under both the box and its menu."""
+    needle = item.lower()
+    exact: list[dict[str, Any]] = []
+    loose: list[dict[str, Any]] = []
+    claimed: set[tuple[str, str]] = set()
+    walk = _Walk(bus, (root_svc, root_path), max_nodes)
+    for svc, path in walk:
+        if "Selection" not in _interfaces(bus, svc, path):
+            continue
+        for index, (cs, cp) in enumerate(_selection_items(bus, svc, path)):
+            if (cs, cp) in claimed:
+                continue
+            claimed.add((cs, cp))
+            nm = _name(bus, cs, cp)
+            if not nm or needle not in nm.lower():
+                continue
+            found = {"name": nm, "role": _role_name(bus, cs, cp), "item": (cs, cp),
+                     "container": (svc, path), "index": index,
+                     "selected": _STATE_SELECTED in _states(bus, cs, cp)}
+            (exact if nm.lower() == needle else loose).append(found)
+    return exact or loose, walk.truncated
+
+
+def selection_of(bus: Bus, svc: str, path: str) -> tuple[tuple[str, str], int] | None:
+    """(container, index) that selects this element through its parent's
+    Selection interface: a tab or a list row, which offers no action of its
+    own, is picked by its container. None when the parent cannot select."""
+    parent = _parent(bus, svc, path)
+    if parent is None or "Selection" not in _interfaces(bus, *parent):
+        return None
+    index = _index_in_parent(bus, svc, path)
+    return (parent, index) if index >= 0 else None
+
+
+def select_child(bus: Bus, svc: str, path: str, index: int) -> bool:
+    """Select the container's item at `index` (Selection.SelectChild), with
+    no pointer. In a multi-selection list this adds to what is selected."""
+    journal.refuse_if_dry("select_child")
+    try:
+        return bool(bus.call(svc, path, _SELECTION, "SelectChild", "i", str(index))[0])
+    except (CallRefused, IndexError):
+        return False
+
+
+def selected_names(bus: Bus, svc: str, path: str) -> list[str]:
+    """The names of what a Selection container has selected, for reading a
+    selection back; [] when nothing is, or it cannot be read."""
+    try:
+        n = int(bus.prop(svc, path, _SELECTION, "NSelectedChildren"))
+        return [_name(bus, *bus.call(svc, path, _SELECTION, "GetSelectedChild", "i", str(i))[0])
+                for i in range(n)]
+    except (CallRefused, IndexError, ValueError, TypeError):
+        return []

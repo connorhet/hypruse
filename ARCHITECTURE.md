@@ -8,7 +8,7 @@ Ten-minute orientation for contributors.
 src/hypruse/
   cli.py         entry point: server by default, doctor / init / stop /
                  journal / replay / skill subcommands, --help
-  verbs.py       the 15 tools as shell verbs: argparse over the same tool
+  verbs.py       the 16 tools as shell verbs: argparse over the same tool
                  functions, the output and exit-code contract, renderers
   cli_state.py   what a one-shot verb remembers between processes (marks
                  numbering, launched-confinement set, strict seat baseline)
@@ -28,6 +28,7 @@ src/hypruse/
                  lookup; backs ui, marks, click_ui, then='ui', and the
                  auth-guard password-field check; also the background
                  primitives (DoAction, GrabFocus, InsertText, read-back)
+                 and set_ui's (Value, SetTextContents, Selection)
   dbuswire.py    minimal D-Bus client for the accessibility bus: one socket
                  per process, EXTERNAL auth, one method call at a time;
                  busctl finds the bus and takes over when it cannot connect
@@ -187,6 +188,21 @@ ask the human.
   return, then calls the control's `DoAction`, or `GrabFocus` for a text
   field (told by role number, since GTK 4 names it "text box"), and reads
   the control back through `current_value`.
+- A control with no action whose parent has the Selection interface (a
+  GTK notebook tab) is not refused: `a11y.selection_of` gives its
+  container and index, and `click_ui` selects it with `SelectChild`,
+  reading the container's selection back.
+- `set_ui` shares `click_ui`'s resolution (`_resolve_control`) but has no
+  pointer path, so it runs the background guards in every window and
+  never asks `bg.decide`. Each change reads what can refuse first (the
+  value range, the interfaces, the action names, the current tick) and
+  then writes through one interface: `Value.CurrentValue` (a property, so
+  `Bus.set_prop` sends it as a variant over the wire, or `busctl
+  set-property`), `EditableText.SetTextContents`, `Selection.SelectChild`
+  or `Action.DoAction` by index. `a11y.selectable` finds an item under the
+  container that indexes it: GTK 3 keeps a combo box's choices in an
+  unnamed menu that is its only child and indexes them through the box,
+  and lists them under both, so items are claimed once.
 - Every background result reads the human's active window and workspace
   before and after (`_seat_now`, `_seat_report`): it may say "the human's
   focus untouched" only when they match, and warns when an app moved them.
@@ -310,7 +326,8 @@ to execute; a rehearsal whose refusals differ from the real run would be
 worth nothing, so the guards stay exactly where they are. Underneath,
 `journal.refuse_if_dry` raises at the effect boundary itself (`input`'s
 six delivery functions, `hyprctl.dispatch`, `clipboard.write`, and the
-accessibility effects `a11y.do_action`, `grab_focus` and `insert_text`), so a path
+accessibility effects `a11y.do_action`, `grab_focus`, `insert_text`, `set_value`,
+`set_text` and `select_child`), so a path
 nobody thought of fails loudly with nothing delivered instead of quietly
 acting during what the caller was told was a simulation.
 

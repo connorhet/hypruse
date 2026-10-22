@@ -119,6 +119,19 @@ class FakeBus:
         if method == "GrabFocus":
             node["grabbed"] = True
             return [True]
+        if method == "SetTextContents":
+            node["text"] = sig[1]
+            return [node.get("accepts", True)]
+        if method == "GetIndexInParent":
+            parent = self.nodes[node["parent"]]
+            return [parent["children"].index((svc, path))]
+        if method == "SelectChild":
+            node["picked"] = int(sig[1])
+            return [node.get("accepts", True)]
+        if method == "GetSelectedChild":
+            return [list(node["selected"][int(sig[1])])]
+        if method == "Set":  # Properties.Set, through set_prop
+            raise AssertionError("set_prop is called directly")
         if method == "InsertText":
             pos, text = int(sig[1]), sig[2]  # sig = (signature, position, text, length)
             n = int(sig[3])
@@ -144,12 +157,22 @@ class FakeBus:
             return node.get("n_actions", 1)
         if name == "CaretOffset":  # likewise a property
             return node.get("caret", 0)
+        if name == "Parent":
+            return list(node["parent"]) if node.get("parent") else ["", "/org/a11y/atspi/null"]
+        if name == "NSelectedChildren":
+            return len(node.get("selected", []))
         if name in ("CurrentValue", "MinimumValue", "MaximumValue"):
             return node[{"CurrentValue": "cur", "MinimumValue": "min", "MaximumValue": "max"}[name]]
         return node.get("name", "")
 
     def conn_pid(self, svc):
         return self.pids.get(svc)
+
+    def set_prop(self, svc, path, iface, name, sig, value):
+        node = self.nodes[(svc, path)]
+        if node.get("read_only"):
+            raise a11y.CallRefused("read-only")
+        node["cur"] = value
 
 
 ALL_STATES = {8, 24, 25, 30}  # enabled, sensitive, showing, visible
@@ -755,7 +778,10 @@ def test_the_effect_calls_refuse_in_a_dry_run(monkeypatch):
     bus = FakeBus({entry: {"role": 79, "name": "", "children": [], "text": "", "caret": 0}})
     for call in (lambda: a11y.do_action(bus, *entry),
                  lambda: a11y.grab_focus(bus, *entry),
-                 lambda: a11y.insert_text(bus, *entry, "x")):
+                 lambda: a11y.insert_text(bus, *entry, "x"),
+                 lambda: a11y.set_text(bus, *entry, "x"),
+                 lambda: a11y.set_value(bus, *entry, 1.0),
+                 lambda: a11y.select_child(bus, *entry, 0)):
         with pytest.raises(Exception, match="(?i)dry"):
             call()
     assert a11y.text_of(bus, *entry) == ""
@@ -800,3 +826,126 @@ def test_one_dedicated_app_scope_is_the_same_app(monkeypatch):
 def test_unrelated_processes_are_not_the_same_app(monkeypatch):
     _procs(monkeypatch, ppid={5: 1, 6: 1})
     assert not a11y.same_app(5, 6) and not a11y.same_app(None, 6)
+
+
+# --- setting values, text and selections --------------------------------------
+
+
+def test_set_value_writes_current_value_and_the_range_reads_back():
+    slider = ("app", "/vol")
+    bus = FakeBus({slider: {"role": 51, "ifaces": ["Value"], "min": 0.0, "max": 100.0,
+                            "cur": 20.0, "children": []}})
+    assert a11y.value_range(bus, *slider) == (0.0, 100.0, 20.0)
+    assert a11y.set_value(bus, *slider, 70) is True
+    assert a11y.value_range(bus, *slider) == (0.0, 100.0, 70.0)
+
+
+def test_a_refused_value_write_is_false_and_no_value_interface_has_no_range():
+    slider = ("app", "/vol")
+    bus = FakeBus({slider: {"role": 51, "ifaces": ["Value"], "min": 0.0, "max": 1.0,
+                            "cur": 0.0, "read_only": True, "children": []},
+                   ("app", "/btn"): {"role": 43, "ifaces": ["Action"], "children": []}})
+    assert a11y.set_value(bus, *slider, 0.5) is False
+    assert a11y.value_range(bus, "app", "/btn") is None
+
+
+def test_set_text_replaces_the_whole_contents():
+    entry = ("app", "/title")
+    bus = FakeBus({entry: {"role": 79, "text": "hello world", "children": []}})
+    assert a11y.set_text(bus, *entry, "new") is True
+    assert a11y.text_of(bus, *entry) == "new"
+
+
+def test_actions_lists_every_action_by_index():
+    combo = ("app", "/combo")
+    bus = FakeBus({combo: {"role": 11, "ifaces": ["Action"], "n_actions": 2,
+                           "actions": ["press", "menu.popup"], "children": []},
+                   ("app", "/plain"): {"role": 29, "ifaces": [], "children": []}})
+    assert a11y.actions(bus, *combo) == ["press", "menu.popup"]
+    assert a11y.actions(bus, "app", "/plain") == []
+
+
+def _tabs_and_combo():
+    """A frame holding a GTK 3 notebook's tab list (tabs as its children)
+    and a combo box whose choices sit in its only child, an unnamed menu
+    that has the Selection interface too."""
+    F, TL, COMBO, MENU = ("a", "/f"), ("a", "/tl"), ("a", "/combo"), ("a", "/menu")
+    tabs = [("a", f"/tab{i}") for i in range(3)]
+    items = [("a", f"/item{i}") for i in range(3)]
+    nodes = {
+        F: {"role": 23, "name": "w", "ifaces": [], "children": [TL, COMBO]},
+        TL: {"role": 38, "name": "", "ifaces": ["Selection"], "children": tabs,
+             "parent": F, "selected": [tabs[0]]},
+        COMBO: {"role": 11, "name": "Colour", "ifaces": ["Selection", "Action"],
+                "children": [MENU], "parent": F, "selected": [items[0]]},
+        MENU: {"role": 33, "name": "", "ifaces": ["Selection"], "children": items,
+               "parent": COMBO},
+    }
+    for node, nm in zip(tabs, ("General", "Advanced", "About"), strict=True):
+        nodes[node] = {"role": 37, "role_name": "page tab", "name": nm, "ifaces": [],
+                       "children": [], "parent": TL,
+                       "states": {23} if nm == "General" else set()}
+    for node, nm in zip(items, ("Red", "Green", "Blue"), strict=True):
+        nodes[node] = {"role": 35, "role_name": "menu item", "name": nm,
+                       "ifaces": ["Action"], "children": [], "parent": MENU}
+    return FakeBus(nodes), F, TL, COMBO
+
+
+def test_an_item_is_found_under_the_container_that_selects_it():
+    bus, frame, tablist, combo = _tabs_and_combo()
+    found, truncated = a11y.selectable(bus, *frame, "advanced")
+    assert [(c["name"], c["container"], c["index"]) for c in found] == [
+        ("Advanced", tablist, 1)]
+    assert truncated is False
+    # a combo box's choices are indexed through the box, not its menu, and
+    # are found once even though the menu can select them as well
+    found, _ = a11y.selectable(bus, *frame, "Blue")
+    assert [(c["name"], c["container"], c["index"]) for c in found] == [("Blue", combo, 2)]
+
+
+def test_an_exact_item_name_wins_over_substrings():
+    bus, frame, _, _ = _tabs_and_combo()
+    assert [c["name"] for c in a11y.selectable(bus, *frame, "e")[0]] == [
+        "General", "Advanced", "Red", "Green", "Blue"]
+    assert [c["name"] for c in a11y.selectable(bus, *frame, "red")[0]] == ["Red"]
+    assert a11y.selectable(bus, *frame, "Purple")[0] == []
+
+
+def test_select_child_and_the_selection_read_back():
+    bus, _, tablist, _ = _tabs_and_combo()
+    assert a11y.select_child(bus, *tablist, 2) is True
+    assert bus.nodes[tablist]["picked"] == 2
+    assert a11y.selected_names(bus, *tablist) == ["General"]  # the fake does not move it
+
+
+def test_a_tab_is_selected_through_its_parent():
+    bus, _, tablist, _ = _tabs_and_combo()
+    assert a11y.selection_of(bus, "a", "/tab2") == (tablist, 2)
+    assert a11y.selection_of(bus, *tablist) is None  # the frame cannot select
+
+
+def test_set_prop_goes_out_as_a_variant_over_the_wire(monkeypatch):
+    sent = []
+
+    class Wire:
+        def call(self, *args):
+            sent.append(args)
+            return []
+
+    monkeypatch.setattr(a11y.dbuswire, "connection", lambda address: Wire())
+    a11y.Bus("unix:x").set_prop("s", "/p", a11y._VALUE, "CurrentValue", "d", 0.5)
+    assert sent == [("s", "/p", "org.freedesktop.DBus.Properties", "Set", "ssv",
+                     [a11y._VALUE, "CurrentValue", ("d", 0.5)])]
+
+
+def test_set_prop_falls_back_to_busctl_set_property(monkeypatch):
+    def unreachable(address):
+        raise a11y.dbuswire.Unreachable("no socket")
+
+    argvs = []
+    monkeypatch.setattr(a11y.dbuswire, "connection", unreachable)
+    monkeypatch.setattr(a11y.shutil, "which", lambda n: "/usr/bin/busctl")
+    monkeypatch.setattr(a11y.subprocess, "run",
+                        lambda argv, **k: argvs.append(argv) or _fake_proc(""))
+    a11y.Bus("unix:x").set_prop("s", "/p", a11y._VALUE, "CurrentValue", "d", 0.5)
+    assert argvs[0][-7:] == ["set-property", "s", "/p", a11y._VALUE, "CurrentValue", "d", "0.5"]

@@ -133,6 +133,16 @@ def wired_bg(monkeypatch):
     s["focus_on_activate"] = 0
     monkeypatch.setattr(srv.a11y, "toolkit", lambda bus, svc: s["toolkit"])
     monkeypatch.setattr(srv, "_focus_on_activate", lambda addr="": s["focus_on_activate"])
+    # a tab's container: (container, index) that selects it, None for a plain control
+    s["pick"], s["selected"], s["selections"] = None, [], []
+    monkeypatch.setattr(srv.a11y, "selection_of", lambda bus, svc, path: s["pick"])
+
+    def select(bus, svc, path, index):
+        s["selections"].append((svc, path, index))
+        return True
+
+    monkeypatch.setattr(srv.a11y, "select_child", select)
+    monkeypatch.setattr(srv.a11y, "selected_names", lambda bus, svc, path: s["selected"])
     monkeypatch.setattr(srv.hinput, "move", lambda x, y: s["clicks"].append(("move", x, y)))
     monkeypatch.setattr(srv.hinput, "drag", lambda *a, **k: s["clicks"].append(("drag",) + a))
     monkeypatch.setattr(srv.hinput, "scroll", lambda **k: s["clicks"].append(("scroll", k)))
@@ -1088,3 +1098,213 @@ def test_a_landing_is_recognised_by_the_workspace_id_too(monkeypatch):
                         lambda a: {"address": a, "workspace": {"id": 99, "name": "agent"}})
     accept = srv._launched_window("99", "foot")
     assert accept({"address": "0xf", "workspace": "agent", "class": "zz"})
+
+
+# --- click_ui on a tab, which only its container can select ---------------------
+
+
+def test_a_tab_without_an_action_is_selected_through_its_container(wired_bg):
+    wired_bg["has_action"] = False
+    wired_bg["pick"] = (("svc", "/tabs"), 2)
+    wired_bg["selected"] = ["Save"]
+    out = str(srv.click_ui(name="Save", window="0xa"))
+    assert wired_bg["selections"] == [("svc", "/tabs", 2)]
+    assert wired_bg["actions"] == [] and wired_bg["clicks"] == []
+    assert out.startswith("selected ") and "now selected: 'Save'" in out
+    assert "the human's focus untouched" in out
+
+
+def test_a_dry_run_selects_no_tab(wired_bg, monkeypatch):
+    monkeypatch.setattr(srv.journal, "dry_run", lambda: True)
+    wired_bg["has_action"] = False
+    wired_bg["pick"] = (("svc", "/tabs"), 0)
+    assert "DRY RUN" in str(srv.click_ui(name="Save", window="0xa"))
+    assert wired_bg["selections"] == []
+
+
+# --- set_ui -------------------------------------------------------------------
+
+
+@pytest.fixture
+def setter(wired_bg, monkeypatch):
+    """wired_bg plus the accessibility calls set_ui makes, against one
+    control whose readings live in `s`."""
+    s = wired_bg
+    s.update(range=(0.0, 100.0, 20.0), set_values=[], set_texts=[], role_num=51,
+             ifaces={"Value"}, action_names=["activate", "menu.popup"], run_actions=[],
+             candidates=[], truncated=False, reading={"value": 20.0, "percent": 20})
+    monkeypatch.setattr(srv.a11y, "value_range", lambda bus, svc, path: s["range"])
+
+    def set_value(bus, svc, path, value):
+        s["set_values"].append(value)
+        s["reading"] = {"value": float(value)}
+        return True
+
+    monkeypatch.setattr(srv.a11y, "set_value", set_value)
+    monkeypatch.setattr(srv.a11y, "current_value", lambda bus, svc, path: dict(s["reading"]))
+
+    def set_text(bus, svc, path, text):
+        s["set_texts"].append(text)
+        s["text_now"] = text
+        return True
+
+    s["text_now"] = "old"
+    monkeypatch.setattr(srv.a11y, "set_text", set_text)
+    monkeypatch.setattr(srv.a11y, "text_of", lambda bus, svc, path: s["text_now"])
+    monkeypatch.setattr(srv.a11y, "_role_num", lambda bus, svc, path: s["role_num"])
+    monkeypatch.setattr(srv.a11y, "_interfaces", lambda bus, svc, path: s["ifaces"])
+    monkeypatch.setattr(srv.a11y, "actions", lambda bus, svc, path: s["action_names"])
+
+    def do_action(bus, svc, path, index=0):
+        s["run_actions"].append(index)
+        if "checked" in s["reading"]:
+            s["reading"] = {"checked": not s["reading"]["checked"]}
+        return True
+
+    monkeypatch.setattr(srv.a11y, "do_action", do_action)
+    monkeypatch.setattr(srv.a11y, "selectable",
+                        lambda bus, svc, path, item: (s["candidates"], s["truncated"]))
+    return s
+
+
+def test_set_ui_needs_exactly_one_change(setter):
+    with pytest.raises(ValueError, match="exactly one"):
+        srv.set_ui(name="Save", window="0xa")
+    with pytest.raises(ValueError, match="exactly one"):
+        srv.set_ui(name="Save", window="0xa", value=3, text="x")
+
+
+def test_set_ui_moves_a_slider_and_reads_it_back(setter):
+    out = str(srv.set_ui(name="Save", window="0xa", value=70))
+    assert setter["set_values"] == [70]
+    assert out.startswith("set push button 'Save' to 70") and "now: value=70.0" in out
+    assert "the human's focus untouched" in out
+    assert setter["clicks"] == [] and setter["dispatch"] == []
+
+
+def test_set_ui_refuses_a_value_outside_the_range(setter):
+    with pytest.raises(srv.trust.TrustError, match=r"outside the range of .* \(0 to 100\)"):
+        srv.set_ui(name="Save", window="0xa", value=150)
+    assert setter["set_values"] == []
+
+
+def test_set_ui_refuses_a_value_for_a_control_without_one(setter):
+    setter["range"] = None
+    with pytest.raises(srv.trust.TrustError, match="no accessibility value"):
+        srv.set_ui(name="Save", window="0xa", value=1)
+
+
+def test_set_ui_says_when_the_app_adjusted_the_value(setter, monkeypatch):
+    def clamp(bus, svc, path, value):
+        setter["reading"] = {"value": 50.0}
+        return True
+
+    monkeypatch.setattr(srv.a11y, "set_value", clamp)
+    assert "adjusted" in str(srv.set_ui(name="Save", window="0xa", value=49.5))
+
+
+def test_set_ui_works_on_the_window_the_human_is_in_without_the_pointer(setter):
+    setter["active"] = "0xa"
+    srv.set_ui(name="Save", window="0xa", value=10)
+    assert setter["set_values"] == [10] and setter["clicks"] == [] and setter["dispatch"] == []
+
+
+def test_set_ui_replaces_text_without_echoing_it(setter):
+    setter["role_num"], setter["ifaces"] = 61, {"EditableText", "Text"}
+    out = str(srv.set_ui(name="Save", window="0xa", text="secret-ish value"))
+    assert setter["set_texts"] == ["secret-ish value"]
+    assert "secret-ish" not in out and "holds the given text (16 characters)" in out
+
+
+def test_set_ui_refuses_a_password_field_without_consent(setter):
+    setter["role_num"], setter["ifaces"] = srv.a11y.PASSWORD_ROLE, {"EditableText"}
+    with pytest.raises(srv.trust.TrustError, match="password field"):
+        srv.set_ui(name="Save", window="0xa", text="hunter2")
+    assert setter["set_texts"] == []
+    out = str(srv.set_ui(name="Save", window="0xa", text="hunter2", allow_auth=True))
+    assert "not read back" in out and "hunter2" not in out
+
+
+def test_set_ui_refuses_text_for_a_control_that_is_not_editable(setter):
+    setter["ifaces"] = {"Action"}
+    with pytest.raises(srv.trust.TrustError, match="not an editable text field"):
+        srv.set_ui(name="Save", window="0xa", text="x")
+
+
+def test_set_ui_ticks_only_when_the_box_is_not_ticked(setter):
+    setter["reading"] = {"checked": True}
+    out = str(srv.set_ui(name="Save", window="0xa", checked=True))
+    assert "already ticked" in out and setter["run_actions"] == []
+    out = str(srv.set_ui(name="Save", window="0xa", checked=False))
+    assert setter["run_actions"] == [0] and "so it is unticked" in out
+    assert "still reads" not in out
+
+
+def test_set_ui_refuses_to_tick_a_box_with_no_action(setter):
+    setter["reading"] = {"checked": False}
+    setter["has_action"] = False
+    with pytest.raises(srv.trust.TrustError, match="no accessibility action to toggle"):
+        srv.set_ui(name="Save", window="0xa", checked=True)
+
+
+def test_set_ui_runs_a_named_action_and_lists_them_when_unknown(setter):
+    out = str(srv.set_ui(name="Save", window="0xa", action="Menu.Popup"))
+    assert setter["run_actions"] == [1] and "'menu.popup'" in out
+    with pytest.raises(srv.trust.TrustError, match="offers: 'activate', 'menu.popup'"):
+        srv.set_ui(name="Save", window="0xa", action="explode")
+
+
+def _candidate(name, index=1):
+    return {"name": name, "role": "page tab", "item": ("svc", f"/{name}"),
+            "container": ("svc", "/tabs"), "index": index, "selected": False}
+
+
+def test_set_ui_selects_an_item_anywhere_in_the_window(setter):
+    setter["candidates"] = [_candidate("Advanced")]
+    setter["selected"] = ["Advanced"]
+    out = str(srv.set_ui(window="0xa", select="Advanced"))
+    assert setter["selections"] == [("svc", "/tabs", 1)]
+    assert out.startswith("selected page tab 'Advanced'") and "now selected: 'Advanced'" in out
+
+
+def test_set_ui_says_when_another_item_ended_up_selected(setter):
+    setter["candidates"] = [_candidate("Advanced")]
+    setter["selected"] = ["General"]
+    assert "not the item asked for" in str(srv.set_ui(window="0xa", select="Advanced"))
+
+
+def test_set_ui_returns_the_candidates_for_an_ambiguous_item(setter):
+    setter["candidates"] = [_candidate("Red", 0), _candidate("Reddish", 1)]
+    out = srv.set_ui(window="0xa", select="red")
+    assert isinstance(out, list) and "matches 2 items" in out[0].text
+    assert setter["selections"] == []
+
+
+def test_set_ui_refuses_an_item_it_cannot_find(setter):
+    with pytest.raises(srv.trust.TrustError, match="no item named like 'Purple'"):
+        srv.set_ui(window="0xa", select="Purple")
+
+
+def test_set_ui_refuses_a_window_whose_frame_is_unsure(setter):
+    setter["frame_sure"] = False
+    with pytest.raises(srv.trust.TrustError, match="cannot tell which window"):
+        srv.set_ui(name="Save", window="0xa", value=1)
+    with pytest.raises(srv.trust.TrustError, match="cannot tell which window"):
+        srv.set_ui(window="0xa", select="Advanced")
+
+
+def test_set_ui_dry_runs_change_nothing(setter, monkeypatch):
+    monkeypatch.setattr(srv.journal, "dry_run", lambda: True)
+    setter["candidates"] = [_candidate("Advanced")]
+    assert "DRY RUN" in str(srv.set_ui(name="Save", window="0xa", value=5))
+    assert "DRY RUN" in str(srv.set_ui(window="0xa", select="Advanced"))
+    assert "DRY RUN" in str(srv.set_ui(name="Save", window="0xa", action="activate"))
+    setter["ifaces"] = {"EditableText"}
+    assert "DRY RUN" in str(srv.set_ui(name="Save", window="0xa", text="x"))
+    assert setter["set_values"] == setter["set_texts"] == setter["selections"] == []
+    assert setter["run_actions"] == []
+
+
+def test_set_ui_is_a_sequence_step(setter):
+    srv.sequence([{"op": "set_ui", "name": "Save", "window": "0xa", "value": 30}], then="none")
+    assert setter["set_values"] == [30]

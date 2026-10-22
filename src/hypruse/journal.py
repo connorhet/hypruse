@@ -613,7 +613,9 @@ def read(source: Path) -> Iterator[dict[str, Any]]:
 # out by `replayable`: replay refuses the whole run instead, because
 # silently dropping an action and then reporting success would be the
 # worst of the three outcomes.
-REPLAYABLE = ("pointer", "keyboard", "click_ui", "hypr", "launch", "use_bind", "clipboard")
+REPLAYABLE = (
+    "pointer", "keyboard", "click_ui", "set_ui", "hypr", "launch", "use_bind", "clipboard",
+)
 
 # Recorded, but never re-issued: `sequence`'s steps are recorded
 # individually (each with `parent` set), so replaying the wrapper as well

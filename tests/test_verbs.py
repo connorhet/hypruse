@@ -733,3 +733,35 @@ def test_the_launch_warning_is_printed():
     out = verbs.render("launch", {"address": "0x1", "class": "foot", "title": "~",
                                   "workspace": 99, "note": "n", "warning": "careful"})
     assert out.splitlines()[-1] == "warning careful"
+
+
+def test_set_ui_mappings():
+    assert kwargs_of("set_ui", "Volume", "--value", "70") == {"name": "Volume", "value": 70.0}
+    assert kwargs_of("set-ui", "--select", "Advanced", "--window", "0xa") == {
+        "select": "Advanced", "window": "0xa"}
+    assert kwargs_of("set_ui", "Agree", "--checked", "false") == {
+        "name": "Agree", "checked": False}
+    assert kwargs_of("set_ui", "--mark", "4", "--action", "menu.popup") == {
+        "mark": 4, "action": "menu.popup"}
+    assert kwargs_of("set_ui", "Title", "--text", "x", "--index", "1") == {
+        "name": "Title", "text": "x", "index": 1}
+
+
+def test_set_ui_usage_errors(capsys):
+    # the parser itself wants exactly one change, and exits with 2
+    for argv in (["set_ui", "Volume"], ["set_ui", "Volume", "--value", "3", "--text", "x"]):
+        with pytest.raises(SystemExit) as exc:
+            verbs.main(argv)
+        assert exc.value.code == verbs.EXIT_USAGE
+    capsys.readouterr()
+    assert verbs.main(["set_ui", "--value", "3"]) == verbs.EXIT_USAGE
+    assert "only --select may name an item alone" in capsys.readouterr().err
+    assert verbs.main(["set_ui", "Volume", "--mark", "2", "--value", "3"]) == verbs.EXIT_USAGE
+
+
+def test_set_ui_exit_codes():
+    assert verbs.exit_for("set_ui", "set slider 'Volume' to 70 (no pointer) in app") == 0
+    assert verbs.exit_for("set_ui", "selected page tab 'About' through ...") == 0
+    assert verbs.exit_for("set_ui", "check box 'Agree' is already ticked; nothing pressed") == 0
+    assert verbs.exit_for("set_ui", "kitty exposes no accessibility tree") == 4
+    assert verbs.exit_for("click_ui", "selected page tab 'About' through ...") == 0

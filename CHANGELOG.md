@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **`set_ui`: change a control without the pointer.** Move a slider or spin
+  button to a `value`, `select` an item in a tab list, combo box or list,
+  replace a field's whole `text`, set a box to `checked` true or false, or
+  run one of a control's named `action`s, all through the accessibility
+  interface, in any window, with the human's cursor and focus untouched.
+  Each change is read back from the tree. Also a shell verb (`set-ui`) and
+  a `sequence` step, and replayable.
+- **`click_ui` selects a tab in the background.** A tab has no action of
+  its own, so it was refused there; it is now selected through its tab
+  list's Selection interface.
+
 ## [0.13.0] - 2026-10-18
 
 Background mode: an agent works in apps on workspaces the human is not

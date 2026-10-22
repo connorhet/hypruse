@@ -7,7 +7,7 @@ import pytest
 from hypruse import server as srv
 
 OBSERVE = {"desktop", "screenshot", "zoom", "ui", "marks", "binds", "wait_for"}
-ACT = {"pointer", "keyboard", "click_ui", "hypr", "launch", "use_bind", "sequence"}
+ACT = {"pointer", "keyboard", "click_ui", "set_ui", "hypr", "launch", "use_bind", "sequence"}
 
 
 def _tool_names(module):
@@ -73,7 +73,7 @@ def test_clipboard_is_double_gated(reloaded, monkeypatch):
 # every acting tool name, as a word (so "hypruse"/"Hyprland" do not match
 # "hypr", and "launchers" does not match "launch")
 _ACT_REF = re.compile(
-    r"\b(pointer|keyboard|click_ui|hypr|launch|use_bind|sequence|clipboard)\b"
+    r"\b(pointer|keyboard|click_ui|set_ui|hypr|launch|use_bind|sequence|clipboard)\b"
 )
 
 

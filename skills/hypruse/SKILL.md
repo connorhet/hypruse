@@ -13,7 +13,7 @@ description: >
   the terminal". Not for editing Hyprland or Omarchy config files (use the
   omarchy skill), and not for web pages when a browser tool is available.
 license: MIT
-compatibility: Linux with a running Hyprland session and the hypruse CLI on PATH (AUR hypruse, uv tool install hypruse, or pipx install hypruse). Needs grim and wtype; ui, marks and click_ui need an AT-SPI bus; marks needs imagemagick.
+compatibility: Linux with a running Hyprland session and the hypruse CLI on PATH (AUR hypruse, uv tool install hypruse, or pipx install hypruse). Needs grim and wtype; ui, marks, click_ui and set_ui need an AT-SPI bus; marks needs imagemagick.
 allowed-tools: Bash(hypruse doctor:*) Bash(hypruse desktop:*) Bash(hypruse screenshot:*) Bash(hypruse zoom:*) Bash(hypruse ui:*) Bash(hypruse marks:*) Bash(hypruse binds:*) Bash(hypruse wait_for:*) Bash(hypruse wait-for:*) Bash(hypruse --help) Read
 metadata:
   author: IlyasKhallouki
@@ -27,7 +27,7 @@ Every verb is `hypruse <verb> [args]`. `hypruse --help` lists every verb and
 `hypruse <verb> [<action>] --help` is the ground truth for its flags; read it
 before guessing. Observation verbs print one plain line per fact; acting verbs print
 one result line and exit 0 only when the action was delivered. The same
-fifteen tools exist as an MCP server (`claude mcp add -s user hypruse -- uvx
+sixteen tools exist as an MCP server (`claude mcp add -s user hypruse -- uvx
 hypruse`); this CLI is for agents that run shell commands.
 
 ## Before anything
@@ -49,6 +49,7 @@ they are visible; screenshot when visibility matters.
 | switch workspace; focus, move, close, fullscreen, float a window | `hypruse hypr ...` | IPC, milliseconds, exact, no image |
 | start an app and get its window address | `hypruse launch CMD [--workspace N]` | blocks on the real openwindow event; opens on the agent's own workspace unless told otherwise |
 | click a named control in a GTK/Qt app | `hypruse click_ui NAME --window ADDR` | coordinate comes from the accessibility tree, one call |
+| set a slider, pick a tab or combo item, replace a field, tick a box | `hypruse set_ui NAME --window ADDR --value N` (or `--select ITEM`, `--text T`, `--checked true`) | no pointer, works in any window; `--select ITEM --window ADDR` needs no NAME |
 | read a form's state, list what is clickable | `hypruse ui --window ADDR [--name N]` | a few hundred exact tokens, no image |
 | see the clickable controls numbered | `hypruse marks --window ADDR`, then `hypruse click_ui --mark N` | numbered screenshot plus legend |
 | look at what the tree cannot name (terminal, canvas, Electron/Chrome without the a11y flag) | `hypruse screenshot --window ADDR`, then `hypruse zoom X Y` | coarse to fine |

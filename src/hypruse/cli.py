@@ -553,11 +553,11 @@ def _unreplayable(entries: list[dict[str, Any]]) -> list[str]:
             reasons.append(f"seq {seq}: {_safe(tool)} (recorded by a newer hypruse)")
         elif not args:
             reasons.append(f"seq {seq}: {_safe(tool)} has no recorded arguments")
-        elif tool == "click_ui" and args.get("mark"):
+        elif tool in ("click_ui", "set_ui") and args.get("mark"):
             # marks live in the server process that drew them, so a fresh
             # replay has no numbering to resolve `mark` against
             mark = _safe(args["mark"])
-            reasons.append(f"seq {seq}: click_ui(mark={mark}) needs a live marks capture")
+            reasons.append(f"seq {seq}: {tool}(mark={mark}) needs a live marks capture")
         elif tool == "clipboard" and not _flag_on("HYPRUSE_CLIPBOARD"):
             # the clipboard tool is opt-in on the SERVER; replay must not
             # be the way around that gate
@@ -773,19 +773,21 @@ server; for agents that run commands). Observation, works in read-only mode:
   wait_for EVENT [--match TEXT] [--timeout S]
 Acting (refused with exit 3 under HYPRUSE_READONLY; all take --dry-run, which
 rehearses; all but launch and clipboard take --then none|desktop|ui|screenshot,
-which appends the effect; pointer, keyboard and click_ui take --allow-auth):
+which appends the effect; pointer, keyboard, click_ui and set_ui take --allow-auth):
   pointer move X Y | click [X Y] [--button B] [--double] | drag X Y TO_X TO_Y [--button B]
           | scroll DY [DX] [--at X Y]
   keyboard type TEXT|- [--window ADDR] | key COMBO [--window ADDR]
   click_ui NAME [--window ADDR] [--index I] [--button B] [--double]   or   click_ui --mark N
+  set_ui NAME|--mark N [--window ADDR] [--index I] --value N | --select ITEM | --text TEXT|-
+         | --checked true|false | --action NAME     (--select ITEM --window ADDR needs no NAME)
   hypr workspace WS | focus_window ADDR | move_window ADDR WS | close_window ADDR
        | fullscreen [ADDR] | toggle_floating [ADDR]
   launch [--workspace WS] [--wait S] COMMAND...   (the app's own flags after --)
   use_bind COMBO
   sequence STEPS|@file|- [--no-stop-on-change]
   clipboard read | write TEXT|-          needs HYPRUSE_CLIPBOARD=1
-Every tool verb takes --json (raw result, one line). click-ui, use-bind and
-wait-for are accepted spellings. Exit: 0 ok, 1 error, 2 usage, 3 refused,
+Every tool verb takes --json (raw result, one line). click-ui, set-ui, use-bind
+and wait-for are accepted spellings. Exit: 0 ok, 1 error, 2 usage, 3 refused,
 4 no result. hypruse VERB [ACTION] --help shows the flags.
 
 For the owner:
