@@ -36,6 +36,12 @@ All notable changes to this project are documented here. The format follows
   it has the browser host installed: the read-only tests reload the server
   module, which undid the stub that keeps it off.
 
+### Changed
+- **`browser open` leaves the human's view alone.** It opens the tab
+  behind the active one, without focusing the browser, through the
+  extension's `where: "background"`; `background=false` opens it in front.
+  Under `HYPRUSE_BACKGROUND=1` it is no longer refused.
+
 ## [0.13.0] - 2026-10-18
 
 Background mode: an agent works in apps on workspaces the human is not

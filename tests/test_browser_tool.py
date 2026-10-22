@@ -56,6 +56,8 @@ class FakeClient:
         return {"scroll_y": 720, "scroll_height": 900}
 
     def open(self, url, where="new"):
+        if where == "background" and self.s.get("old_extension"):
+            raise BrowserError("bad_request", "where: invalid enum value")
         self.s["calls"].append(("open", url, where))
         return 99
 
@@ -149,8 +151,8 @@ def test_the_guarantee_refuses_the_human_tab_open_and_activate(bridge, monkeypat
     srv.browser("snapshot", tab=12)
     with pytest.raises(srv.trust.TrustError, match="on the human's screen"):
         srv.browser("click", element="e1")
-    with pytest.raises(srv.trust.TrustError, match="brings a browser tab forward"):
-        srv.browser("open", url="https://example.com/")
+    with pytest.raises(srv.trust.TrustError, match="background=false is refused"):
+        srv.browser("open", url="https://example.com/", background=False)
     with pytest.raises(srv.trust.TrustError, match="background=false is refused"):
         srv.browser("activate", tab=13, background=False)
     # a tab it cannot place is refused too: it may be the human's
@@ -159,7 +161,9 @@ def test_the_guarantee_refuses_the_human_tab_open_and_activate(bridge, monkeypat
         srv.browser("scroll", tab=12)
     srv.browser("snapshot", tab=13)
     assert srv.browser("click", element="e1").startswith("clicked")  # a hidden tab is fine
-    assert not any(c[0] in ("open", "activate") for c in bridge["calls"])
+    assert not any(c[0] == "activate" for c in bridge["calls"])
+    # a tab opened behind the active one takes nothing from the human
+    assert "not brought forward" in srv.browser("open", url="https://example.com/")
 
 
 def test_confinement_refuses_acting_but_not_reading(bridge, monkeypatch):
@@ -216,12 +220,25 @@ def test_then_snapshot_appends_the_page_after_the_action(bridge):
     assert json.loads(out[1].text)["snapshot"] == "s1-abc"
 
 
-def test_open_and_activate_take_the_human_screen_so_they_need_consent(bridge):
-    for kwargs in ({"action": "open", "url": "https://example.com/"},
-                   {"action": "activate", "tab": 13}):
-        with pytest.raises(srv.trust.TrustError, match="takes the human's focus"):
-            srv.browser(**kwargs)
+def test_activate_takes_the_human_screen_so_it_needs_consent(bridge):
+    with pytest.raises(srv.trust.TrustError, match="takes the human's focus"):
+        srv.browser("activate", tab=13)
     assert bridge["calls"] == []
+
+
+def test_open_puts_the_tab_behind_unless_told_to_bring_it_forward(bridge):
+    out = srv.browser("open", url="https://example.com/")
+    assert bridge["calls"][-1] == ("open", "https://example.com/", "background")
+    assert out.startswith("opened tab 99 behind the active tab") and "not brought forward" in out
+    out = srv.browser("open", url="https://example.com/", background=False)
+    assert bridge["calls"][-1] == ("open", "https://example.com/", "new")
+    assert "in the foreground" in out
+
+
+def test_an_extension_without_background_open_says_to_update(bridge):
+    bridge["old_extension"] = True
+    with pytest.raises(ValueError, match="update it, or pass background=false"):
+        srv.browser("open", url="https://example.com/")
 
 
 def test_a_result_warns_when_the_human_focus_moved(bridge):

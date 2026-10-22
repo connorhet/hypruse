@@ -2275,12 +2275,13 @@ def browser(
     a snapshot (`snapshot`, default the latest of that tab; `text`, and
     `submit=true` to press Enter); 'scroll' moves a page `direction`
     up|down|top|bottom. Element ids belong to one snapshot: after the page
-    changes, take a new one. 'open' opens `url` (http/https) in a new
-    foreground tab and 'activate' brings `tab` forward: both make the
-    browser take the human's focus (the compositor can switch their
-    workspace to it), so they are refused unless `background=false` says
-    the human expects it; to read a page in the background, snapshot a tab
-    that is already open. 'close', 'back' and 'forward' act on `tab`.
+    changes, take a new one. 'open' opens `url` (http/https) in a new tab
+    that is NOT brought forward, so the human keeps their view; snapshot
+    and act on it by the tab id it returns (`background=false` opens it in
+    front instead). 'activate' brings `tab` forward and the browser takes
+    the human's focus (the compositor can switch their workspace to it), so
+    it is refused unless `background=false` says the human expects it.
+    'close', 'back' and 'forward' act on `tab`.
     `profile` picks among connected browser profiles (1 = first). The
     extension refuses password and card fields and never reads what a
     field holds. Each acting result says whether the human's focus stayed
@@ -2340,11 +2341,13 @@ def browser(
                 _remember_snapshot(profile, snap)
                 return json.dumps(_snapshot_view(snap))
             seen = target.get("on_screen") if target else None
-            if action in ("open", "activate") and bg.decide(False, background):
-                bg.refuse(f"'{action}' brings a browser tab forward and the browser takes the "
+            behind = bg.decide(False, background)  # open: a tab that is not brought forward
+            if action == "activate" and behind:
+                bg.refuse("'activate' brings a browser tab forward and the browser takes the "
                           "human's focus, which can switch their workspace to it",
-                          "snapshot, click and type work in a tab that is already open")
-            if bg.mode() == bg.GUARANTEE and seen is not False:
+                          "snapshot, click and type work in a tab without bringing it forward")
+            # open acts on no tab: its new one is not brought forward
+            if bg.mode() == bg.GUARANTEE and action != "open" and seen is not False:
                 bg.refuse("that tab is on the human's screen, or it cannot be told that it is not")
             label = f"tab {target.get('id')} ({target.get('title', '')!r})" if target else "tab"
             what = ""
@@ -2355,7 +2358,8 @@ def browser(
                     "type": f"type {len(text)} characters into {what} in {label}"
                             + (" and press Enter" if submit else ""),
                     "scroll": f"scroll {label} {direction}",
-                    "open": "open a URL in a new foreground tab",
+                    "open": "open a URL in a new tab "
+                            + ("behind the active one" if behind else "in the foreground"),
                     "activate": f"bring {label} forward and focus its window",
                     "close": f"close {label}", "back": f"go back in {label}",
                     "forward": f"go forward in {label}"}[action]
@@ -2371,7 +2375,14 @@ def browser(
             elif action == "scroll":
                 result = client.scroll(direction, tab or None)
             elif action == "open":
-                tab = client.open(url, "new")
+                try:
+                    tab = client.open(url, "background" if behind else "new")
+                except BrowserError as exc:
+                    if behind and exc.code == "bad_request":  # an extension before "background"
+                        raise ValueError(
+                            "this hypruse-browser extension cannot open a tab in the background; "
+                            "update it, or pass background=false to open it in front") from None
+                    raise
             elif action == "activate":
                 client.activate(tab)
             elif action == "close":
@@ -2382,8 +2393,10 @@ def browser(
                    "type": f"typed {len(text)} characters into {what} in {label}"
                            + (" and pressed Enter" if submit else ""),
                    "scroll": f"scrolled {label} {direction}",
-                   "open": f"opened tab {tab} in the foreground of the last focused browser "
-                           "window",
+                   "open": f"opened tab {tab} " + (
+                       "behind the active tab of the last focused browser window, not brought "
+                       "forward" if behind else "in the foreground of the last focused browser "
+                       "window"),
                    "activate": f"brought {label} forward and focused its window",
                    "close": f"closed {label}", "back": f"went back in {label}",
                    "forward": f"went forward in {label}"}[action]
