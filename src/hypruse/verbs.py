@@ -671,6 +671,8 @@ def _render_ui(items: list[dict[str, Any]], key: str = "") -> str:
             line += f" percent={e['percent']}"
         if "checked" in e:
             line += f" checked={json.dumps(e['checked'])}"
+        if e.get("selected"):  # the one selected tab; the rest would only be noise
+            line += " selected"
         if "action" in e:
             line += f" action={_safe(e['action'])}"
         if e.get("clickable") is False:

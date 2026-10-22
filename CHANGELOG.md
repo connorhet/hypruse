@@ -25,6 +25,17 @@ All notable changes to this project are documented here. The format follows
   `activate` take the human's focus and need `background=false`; each
   result reports whether the human's focus moved.
 
+### Changed
+- **`ui` and `marks` read more of a form back.** A tab says whether it is
+  the `selected` one, and a combo box reports its chosen item as `value`
+  (where the toolkit exposes it: GTK 3 does, GTK 4's dropdown does not).
+  `set_ui checked=` ends with the box's reading, like the other changes.
+
+### Fixed
+- The test suite no longer offers the browser tool when the machine running
+  it has the browser host installed: the read-only tests reload the server
+  module, which undid the stub that keeps it off.
+
 ## [0.13.0] - 2026-10-18
 
 Background mode: an agent works in apps on workspaces the human is not

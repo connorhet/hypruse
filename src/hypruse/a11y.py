@@ -70,7 +70,9 @@ _CHECKABLE_ROLES = frozenset({7, 8, 44, 45, 62})  # check box/menu item, radio, 
 _TEXT_ROLES = frozenset({61, 79})  # text, entry
 _VALUE_ROLES = frozenset({51, 52})  # slider, spin button
 _MAX_TEXT = 200  # a text area can hold a whole document; report a readable head
-_VALUE_BEARING_ROLES = _CHECKABLE_ROLES | _TEXT_ROLES | _VALUE_ROLES
+_TAB_ROLES = frozenset({37})  # page tab: whether it is the selected one is free, in its states
+_CHOICE_ROLES = frozenset({11})  # combo box: its choice, read through its Selection
+_VALUE_BEARING_ROLES = _CHECKABLE_ROLES | _TEXT_ROLES | _VALUE_ROLES | _TAB_ROLES | _CHOICE_ROLES
 
 # Roles worth clicking or typing into, as AtspiRole ENUM NUMBERS (from
 # GetRole). Numbers are matched, not GetRoleName strings, because the role
@@ -477,13 +479,23 @@ def element_value(bus: Bus, svc: str, path: str, role: int, states: set[int]) ->
     """The element's CURRENT VALUE, as opposed to its label: what is typed
     into it, where a slider sits, whether a box is ticked. Returns the keys
     that apply ({} for a plain button), because the accessible name alone
-    says a control called "Volume" exists without saying it is at 66%.
+    says a control called "Volume" exists without saying it is at 66%: a
+    tab says whether it is the `selected` one, a combo box its chosen item.
 
     Gated on role: checkable state is free (already in `states`), Text and
     Value cost one call each and only for roles that can carry them. A
     password field's contents are never read."""
     if role in _CHECKABLE_ROLES:
         return {"checked": _STATE_CHECKED in states or _STATE_PRESSED in states}
+    if role in _TAB_ROLES:
+        return {"selected": _STATE_SELECTED in states}
+    if role in _CHOICE_ROLES:
+        # a combo box's name is often its label, not its choice; GTK 3 says
+        # which item is chosen through Selection (GTK 4's dropdown does not)
+        if "Selection" not in _interfaces(bus, svc, path):
+            return {}
+        chosen = selected_names(bus, svc, path)
+        return {"value": chosen[0]} if chosen else {}
     if role in _TEXT_ROLES:
         if "Text" not in _interfaces(bus, svc, path):
             return {}

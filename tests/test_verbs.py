@@ -765,3 +765,13 @@ def test_set_ui_exit_codes():
     assert verbs.exit_for("set_ui", "check box 'Agree' is already ticked; nothing pressed") == 0
     assert verbs.exit_for("set_ui", "kitty exposes no accessibility tree") == 4
     assert verbs.exit_for("click_ui", "selected page tab 'About' through ...") == 0
+
+
+def test_ui_marks_only_the_selected_tab():
+    out = verbs._render_ui([
+        {"role": "page tab", "name": "General", "x": 1, "y": 2, "selected": False},
+        {"role": "page tab", "name": "About", "x": 3, "y": 2, "selected": True},
+        {"role": "combo box", "name": "Colour", "x": 5, "y": 6, "value": "Blue"}])
+    assert out.splitlines() == ['[0] page tab "General" @1,2',
+                                '[1] page tab "About" @3,2 selected',
+                                '[2] combo box "Colour" @5,6 value="Blue"']

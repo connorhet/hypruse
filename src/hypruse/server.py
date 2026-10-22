@@ -494,7 +494,7 @@ def _ui_read(
             "y": y,
             "clickable": e["clickable"],
         }
-        for key in ("value", "percent", "checked", "action"):  # only where it applies
+        for key in ("value", "percent", "checked", "selected", "action"):  # where it applies
             if key in e:
                 item[key] = e[key]
         if handles and exact is not None:  # what a background press needs
@@ -535,8 +535,9 @@ def ui(window: str = "", name: str = "", actionable: bool = True) -> list[Any] |
     after focusing), or do both in one call with `click_ui`.
     Controls that carry a CURRENT VALUE also
     report it: `value` (text typed into an entry, or a slider/spinner
-    number), `percent` for a slider's position, `checked` for a box or
-    toggle. Password fields never report contents, and many dropdowns
+    number, or a combo box's chosen item), `percent` for a slider's
+    position, `checked` for a box or toggle, `selected` for a tab.
+    Password fields never report contents, and some dropdowns (GTK 4's)
     expose no value at all, so read the screen with screenshot when a
     rendered value matters. Not every app exposes a tree (terminals, and
     Electron/Chrome without --force-renderer-accessibility, expose little
@@ -1635,7 +1636,8 @@ def _set_checked(bus, client, svc, path, desc, checked, then, allow_auth):
         _set_refuse("the app did not accept the accessibility action")
     time.sleep(0.05)
     now = a11y.current_value(bus, svc, path).get("checked")
-    seen = "" if now == checked else f"; it still reads checked={str(now).lower()}"
+    seen = (f"; now: checked={str(now).lower()}" if now == checked
+            else f"; it still reads checked={str(now).lower()}")
     return _set_done(client, f"pressed {desc} so it is {want} through its accessibility "
                      f"action{seen}", seat, then)
 
@@ -2964,9 +2966,10 @@ _READONLY_DOCS = {
     app's list row), with the action's name as `action`. Returns
     [{role, name, x, y, clickable}]. Controls
     that carry a CURRENT VALUE also report it: `value` (text typed into an
-    entry, or a slider/spinner number), `percent` for a slider's position,
-    `checked` for a box or toggle. Password fields never report contents,
-    and many dropdowns expose no value at all, so read the screen with
+    entry, a slider/spinner number, or a combo box's chosen item),
+    `percent` for a slider's position, `checked` for a box or toggle,
+    `selected` for a tab. Password fields never report contents, and some
+    dropdowns (GTK 4's) expose no value at all, so read the screen with
     screenshot when a rendered value matters. Not every app exposes a tree
     (terminals, and Electron/Chrome without --force-renderer-accessibility,
     expose little or nothing); when it does not, fall back to

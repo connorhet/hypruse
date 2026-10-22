@@ -949,3 +949,28 @@ def test_set_prop_falls_back_to_busctl_set_property(monkeypatch):
                         lambda argv, **k: argvs.append(argv) or _fake_proc(""))
     a11y.Bus("unix:x").set_prop("s", "/p", a11y._VALUE, "CurrentValue", "d", 0.5)
     assert argvs[0][-7:] == ["set-property", "s", "/p", a11y._VALUE, "CurrentValue", "d", "0.5"]
+
+
+def test_a_tab_says_whether_it_is_the_selected_one():
+    bus, _, _, _ = _tabs_and_combo()
+    assert a11y.current_value(bus, "a", "/tab0") == {"selected": True}
+    assert a11y.current_value(bus, "a", "/tab1") == {"selected": False}
+
+
+def test_a_combo_box_reports_its_chosen_item_through_selection():
+    bus, _, _, combo = _tabs_and_combo()
+    assert a11y.current_value(bus, *combo) == {"value": "Red"}
+    bus.nodes[combo]["selected"] = []
+    assert a11y.current_value(bus, *combo) == {}  # nothing chosen, nothing claimed
+    bus.nodes[combo]["ifaces"] = ["Action"]  # GTK 4's dropdown: no Selection at all
+    assert a11y.current_value(bus, *combo) == {}
+
+
+def test_ui_lists_a_tab_with_whether_it_is_selected():
+    bus, frame, _, _ = _tabs_and_combo()
+    for node in ("/tab0", "/tab1", "/tab2"):
+        bus.nodes[("a", node)].update(extent=(0, 0, 50, 20), states={23, *ALL_STATES}
+                                      if node == "/tab0" else set(ALL_STATES))
+    found, _ = a11y.find_elements(bus, *frame)
+    assert [(e["name"], e["selected"]) for e in found] == [
+        ("General", True), ("Advanced", False), ("About", False)]

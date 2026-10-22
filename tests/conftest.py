@@ -126,4 +126,8 @@ def no_browser_bridge(monkeypatch):
     manifest under the developer's home, so without this the tool list
     would differ between a machine with the extension and one without.
     """
-    monkeypatch.setattr(server, "_browser_enabled", lambda: False)
+    # the installer's check, not server._browser_enabled: the read-only
+    # tests reload the server module, which would bring the real one back
+    from hypruse.browser import install
+
+    monkeypatch.setattr(install, "registered", lambda home=None: False)

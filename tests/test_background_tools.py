@@ -1237,7 +1237,7 @@ def test_set_ui_ticks_only_when_the_box_is_not_ticked(setter):
     assert "already ticked" in out and setter["run_actions"] == []
     out = str(srv.set_ui(name="Save", window="0xa", checked=False))
     assert setter["run_actions"] == [0] and "so it is unticked" in out
-    assert "still reads" not in out
+    assert "now: checked=false" in out and "still reads" not in out
 
 
 def test_set_ui_refuses_to_tick_a_box_with_no_action(setter):

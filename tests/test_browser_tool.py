@@ -248,6 +248,7 @@ def test_no_connected_browser_is_a_plain_error(monkeypatch):
 
 
 def test_the_tool_is_offered_only_once_the_host_is_registered(monkeypatch, tmp_path):
+    monkeypatch.undo()  # the real check, against a home of its own
     assert install.registered(home=tmp_path) is False
     (tmp_path / ".config/chromium/NativeMessagingHosts").mkdir(parents=True)
     (tmp_path / ".config/chromium/NativeMessagingHosts/dev.hypruse.browser.json").write_text("{}")
