@@ -36,6 +36,14 @@ All notable changes to this project are documented here. The format follows
   it has the browser host installed: the read-only tests reload the server
   module, which undid the stub that keeps it off.
 
+### Added
+- **`browser upload`** puts a local file in a page's file field, with no
+  picker, through a hypruse-browser that has `page.upload`. The agent picks
+  the file; hypruse refuses credentials (`.env`, `.pem`/`.key` and the like,
+  anything under `.ssh`, `.gnupg`, `.aws`, `.kube`, keyrings), files with
+  several hard links, and anything over 10 MB, judging the path a symlink
+  resolves to as well as the one given.
+
 ### Changed
 - **`browser` snapshots reach into frames** (an embedded sign-in or payment
   form), with a hypruse-browser that reads them: their elements have ids like

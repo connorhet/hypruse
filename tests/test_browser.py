@@ -393,3 +393,23 @@ def test_status_says_where_it_is_installed_and_whether_a_browser_is_connected(tm
     assert found.installed == ("chrome",)
     assert found.extension == "0.1.0"
     assert install.status(home=home, socket=tmp_path / "none.sock").extension == ""
+
+
+def test_upload_stages_in_chunks_under_the_message_cap_then_attaches(monkeypatch):
+    from hypruse.browser import client as client_mod
+
+    sent = []
+    c = client_mod.BrowserClient("/nonexistent")
+    monkeypatch.setattr(c, "call",
+                        lambda op, args=None, timeout=None: sent.append((op, args)) or {})
+    monkeypatch.setattr(client_mod, "UPLOAD_CHUNK", 8)
+    c.upload("s1", "f3.e2", "cv.txt", b"0123456789abcdef", "text/plain")
+    stages = [a for op, a in sent if op == "files.stage"]
+    assert [len(a["data"]) for a in stages] == [8, 8, 8]  # 24 base64 characters
+    assert {a["total"] for a in stages} == {3} and [a["index"] for a in stages] == [0, 1, 2]
+    import base64
+    assert base64.b64decode("".join(a["data"] for a in stages)) == b"0123456789abcdef"
+    op, args = sent[-1]
+    assert op == "page.upload" and args == {"snapshot_id": "s1", "element_id": "f3.e2",
+                                            "upload_id": stages[0]["upload_id"],
+                                            "name": "cv.txt", "type": "text/plain"}

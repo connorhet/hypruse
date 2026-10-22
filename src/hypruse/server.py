@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import json
+import mimetypes
 import os
 import re
 import shutil
@@ -2141,7 +2142,16 @@ def _confine_allows() -> Callable[[str], bool] | None:
 # --- the browser, through the hypruse-browser extension ---------------------------
 
 _BROWSER_OBSERVE = ("tabs", "snapshot")
-_BROWSER_PAGE = ("click", "type", "scroll")
+_BROWSER_PAGE = ("click", "type", "scroll", "upload")
+_UPLOAD_MAX = 10 * 1024 * 1024  # as Claude in Chrome: one upload, at most 10 MB
+# Where credentials live, by folder or file name: an upload of one is refused whoever asks,
+# since a page's text can tell an agent to send it. As Claude in Chrome refuses .env, .pem,
+# .key and .ssh, with the other usual homes of keys and tokens on Linux.
+_SECRET_DIRS = frozenset({".ssh", ".gnupg", ".aws", ".kube", ".docker", ".password-store",
+                          "keyrings", ".azure", ".config/gcloud"})
+_SECRET_NAMES = frozenset({".netrc", ".git-credentials", ".pgpass", ".npmrc", ".pypirc",
+                           "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "credentials"})
+_SECRET_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".kdbx", ".keystore", ".jks")
 _BROWSER_TAB = ("activate", "close", "back", "forward")
 _BROWSER_ACTIONS = (*_BROWSER_OBSERVE, *_BROWSER_PAGE, "open", *_BROWSER_TAB)
 _BROWSER_CLASSES = ("chromium", "chrome", "brave")
@@ -2232,6 +2242,56 @@ def _snapshot_view(snap: dict[str, Any]) -> dict[str, Any]:
             "elements": elements}
 
 
+def _secret_reason(path: Path) -> str:
+    """Why a path is where credentials are kept, or "" when it is not."""
+    parts = path.parts
+    for i, part in enumerate(parts):
+        if part in _SECRET_DIRS or "/".join(parts[i:i + 2]) in _SECRET_DIRS:
+            return f"it is under {part}/, where keys and tokens are kept"
+    name = path.name.lower()
+    if name == ".env" or name.startswith(".env."):
+        return "a .env file holds secrets"
+    if name in _SECRET_NAMES or name.endswith(_SECRET_SUFFIXES):
+        return f"{path.name} is a credential file"
+    return ""
+
+
+def _upload_file(file: str) -> tuple[Path, int]:
+    """The file an upload names, checked before anything is read: it must be a regular file
+    the session can read, up to 10 MB, with one hard link (another link could be a key under
+    a harmless name), and neither the path given nor the one it resolves to may be where
+    credentials live. Returns (resolved path, size)."""
+    given = Path(os.path.expanduser(file))
+    if not given.is_absolute():
+        raise ValueError(f"upload needs an absolute path (or ~/...), not {file!r}")
+    real = Path(os.path.realpath(given))
+    for p in (given, real):
+        why = _secret_reason(p)
+        if why:
+            raise trust.TrustError(f"refusing to upload {file}: {why}. Upload a copy of what "
+                                   "is meant to be shared, if anything is")
+    try:
+        st = real.stat()
+    except OSError as exc:
+        raise ValueError(f"cannot upload {file}: {exc.strerror or exc}") from None
+    if not real.is_file():
+        raise ValueError(f"cannot upload {file}: not a regular file")
+    if st.st_nlink > 1:
+        raise trust.TrustError(f"refusing to upload {file}: it has {st.st_nlink} hard links, so "
+                               "it could be another file under a harmless name; upload a copy")
+    if st.st_size > _UPLOAD_MAX:
+        raise ValueError(f"cannot upload {file}: {st.st_size / 1048576:.1f} MB is over the "
+                         f"{_UPLOAD_MAX // 1048576} MB limit")
+    if not os.access(real, os.R_OK):
+        raise ValueError(f"cannot upload {file}: not readable")
+    return real, st.st_size
+
+
+def _size(n: int) -> str:
+    return f"{n} bytes" if n < 1024 else f"{n / 1024:.0f} KB" if n < 1048576 \
+        else f"{n / 1048576:.1f} MB"
+
+
 def _browser_failed(exc: Exception) -> NoReturn:
     from hypruse.browser import BrowserError, BrowserUnavailable
 
@@ -2261,6 +2321,7 @@ def browser(
     settle_ms: int = 0,
     then: str = "none",
     background: bool | None = None,
+    file: str = "",
 ) -> list[Any] | str:
     """Read and operate web pages in the human's own Chrome, Chromium or Brave
     through the hypruse-browser extension: it sees inside pages, which the
@@ -2283,7 +2344,11 @@ def browser(
     front instead). 'activate' brings `tab` forward and the browser takes
     the human's focus (the compositor can switch their workspace to it), so
     it is refused unless `background=false` says the human expects it.
-    'close', 'back' and 'forward' act on `tab`.
+    'close', 'back' and 'forward' act on `tab`. 'upload' puts the local
+    `file` (an absolute path) in a snapshot's file field `element`, as
+    choosing it in the browser's picker would (no picker opens): up to 10
+    MB, and never a credential (.env, keys, anything under .ssh, .gnupg,
+    .aws and the like) or a file with several hard links.
     `profile` picks among connected browser profiles (1 = first). The
     extension refuses password and card fields and never reads what a
     field holds. Each acting result says whether the human's focus stayed
@@ -2305,7 +2370,12 @@ def browser(
                 "HYPRUSE_CONFINE is set, and a browser tab cannot be held to a window scope, "
                 "so browser actions are refused; read with tabs and snapshot")
         trust.guard_session_lock(True, False)
-    if action in ("click", "type"):
+    upload: tuple[Path, int] | None = None
+    if action == "upload":
+        if not file:
+            raise ValueError("upload needs `file`, the path of the file to send")
+        upload = _upload_file(file)  # before any snapshot or browser work: it can refuse
+    if action in ("click", "type", "upload"):
         if not element:
             raise ValueError(f"{action} needs `element`, an id from a snapshot")
         if not snapshot:
@@ -2360,6 +2430,8 @@ def browser(
                     "type": f"type {len(text)} characters into {what} in {label}"
                             + (" and press Enter" if submit else ""),
                     "scroll": f"scroll {label} {direction}",
+                    "upload": (f"upload {upload[0].name} ({_size(upload[1])}) to {what} in "
+                               f"{label}") if upload else "",
                     "open": "open a URL in a new tab "
                             + ("behind the active one" if behind else "in the foreground"),
                     "activate": f"bring {label} forward and focus its window",
@@ -2376,6 +2448,9 @@ def browser(
                 client.type(snapshot, element, text, submit=submit)
             elif action == "scroll":
                 result = client.scroll(direction, tab or None)
+            elif action == "upload" and upload is not None:
+                kind_ = mimetypes.guess_type(upload[0].name)[0] or ""
+                client.upload(snapshot, element, upload[0].name, upload[0].read_bytes(), kind_)
             elif action == "open":
                 try:
                     tab = client.open(url, "background" if behind else "new")
@@ -2392,6 +2467,8 @@ def browser(
             else:
                 client.history(tab, action)
             msg = {"click": f"clicked {what} in {label}",
+                   "upload": (f"uploaded {upload[0].name} ({_size(upload[1])}) to {what} in "
+                              f"{label}") if upload else "",
                    "type": f"typed {len(text)} characters into {what} in {label}"
                            + (" and pressed Enter" if submit else ""),
                    "scroll": f"scrolled {label} {direction}",

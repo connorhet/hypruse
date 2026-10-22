@@ -8,6 +8,7 @@ read as the answer to the next call; the next call reconnects.
 
 from __future__ import annotations
 
+import base64
 import collections
 import itertools
 import json
@@ -20,6 +21,9 @@ from typing import Any
 
 # how many Chrome profiles can each have the extension connected at once
 MAX_BROWSERS = 8
+# base64 characters per files.stage message: Chrome caps a message to the extension at 1 MB,
+# and the JSON around a chunk is small
+UPLOAD_CHUNK = 640 * 1024
 
 
 def socket_path() -> Path:
@@ -208,6 +212,21 @@ class BrowserClient:
         if tab_id is not None:
             args["tab_id"] = tab_id
         return self.call("page.scroll", args)
+
+    def upload(
+        self, snapshot_id: str, element_id: str, name: str, data: bytes, type_: str = ""
+    ) -> dict[str, Any]:
+        """Put a file in a snapshot's file field: staged in chunks, then attached."""
+        encoded = base64.b64encode(data).decode()
+        chunks = [encoded[i:i + UPLOAD_CHUNK] for i in range(0, len(encoded), UPLOAD_CHUNK)]
+        chunks = chunks or [""]
+        upload_id = f"u{os.getpid()}-{next(self._ids)}"
+        for index, chunk in enumerate(chunks):
+            self.call("files.stage", {"upload_id": upload_id, "index": index,
+                                      "total": len(chunks), "data": chunk})
+        return self.call("page.upload", {"snapshot_id": snapshot_id, "element_id": element_id,
+                                         "upload_id": upload_id, "name": name, "type": type_},
+                         timeout=self.timeout + 10)
 
     def top_sites(self) -> list[dict[str, Any]]:
         return list(self.call("sites.top").get("sites", []))

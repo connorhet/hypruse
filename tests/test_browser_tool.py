@@ -61,6 +61,10 @@ class FakeClient:
         self.s["calls"].append(("open", url, where))
         return 99
 
+    def upload(self, snapshot_id, element_id, name, data, type_=""):
+        self.s["calls"].append(("upload", snapshot_id, element_id, name, data, type_))
+        return {"name": name, "size": len(data), "files": 1}
+
     def activate(self, tab_id):
         self.s["calls"].append(("activate", tab_id))
 
@@ -294,3 +298,83 @@ def test_replay_refuses_browser_entries_with_the_reason():
     entry = {"tool": "browser", "seq": 4, "args": {"action": "click", "element": "e1"}}
     monkey = cli._unreplayable([entry])
     assert monkey and "snapshot that does not outlive the page" in monkey[0]
+
+
+# --- uploads ----------------------------------------------------------------
+
+
+def test_upload_sends_the_file_to_the_snapshot_field(bridge, tmp_path):
+    cv = tmp_path / "cv.pdf"
+    cv.write_bytes(b"%PDF-1.4 hello")
+    srv.browser("snapshot", tab=13)
+    out = srv.browser("upload", element="e2", file=str(cv))
+    assert bridge["calls"][-1] == ("upload", "s1-abc", "e2", "cv.pdf", b"%PDF-1.4 hello",
+                                   "application/pdf")
+    assert out.startswith("uploaded cv.pdf (14 bytes) to e2 (search 'Search') in tab 13")
+
+
+def test_upload_resolves_home_and_needs_an_absolute_path(bridge, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "notes.txt").write_text("hi")
+    srv.browser("snapshot", tab=13)
+    assert srv.browser("upload", element="e2", file="~/notes.txt").startswith("uploaded notes.txt")
+    with pytest.raises(ValueError, match="absolute path"):
+        srv.browser("upload", element="e2", file="notes.txt")
+
+
+@pytest.mark.parametrize("rel", [".ssh/id_ed25519.pub", ".env", ".env.local", "server.pem",
+                                 "tls/private.key", ".aws/config", ".config/gcloud/token.json",
+                                 ".local/share/keyrings/login.keyring", ".git-credentials"])
+def test_upload_refuses_credentials(bridge, tmp_path, rel):
+    path = tmp_path / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("secret")
+    srv.browser("snapshot", tab=13)
+    with pytest.raises(srv.trust.TrustError, match="refusing to upload"):
+        srv.browser("upload", element="e2", file=str(path))
+    assert not any(c[0] == "upload" for c in bridge["calls"])
+
+
+def test_upload_follows_a_link_to_where_it_points(bridge, tmp_path):
+    key = tmp_path / ".ssh" / "id_rsa"
+    key.parent.mkdir()
+    key.write_text("-----BEGIN KEY-----")
+    harmless = tmp_path / "holiday.jpg"
+    harmless.symlink_to(key)
+    srv.browser("snapshot", tab=13)
+    with pytest.raises(srv.trust.TrustError, match=r"under \.ssh/"):
+        srv.browser("upload", element="e2", file=str(harmless))
+
+
+def test_upload_refuses_a_file_with_another_hard_link(bridge, tmp_path):
+    original = tmp_path / "a.txt"
+    original.write_text("x")
+    (tmp_path / "b.txt").hardlink_to(original)
+    srv.browser("snapshot", tab=13)
+    with pytest.raises(srv.trust.TrustError, match="2 hard links"):
+        srv.browser("upload", element="e2", file=str(original))
+
+
+def test_upload_refuses_a_large_missing_or_odd_file(bridge, tmp_path, monkeypatch):
+    big = tmp_path / "big.bin"
+    big.write_bytes(b"0" * 64)
+    monkeypatch.setattr(srv, "_UPLOAD_MAX", 32)
+    srv.browser("snapshot", tab=13)
+    with pytest.raises(ValueError, match="over the"):
+        srv.browser("upload", element="e2", file=str(big))
+    with pytest.raises(ValueError, match="cannot upload"):
+        srv.browser("upload", element="e2", file=str(tmp_path / "gone.txt"))
+    with pytest.raises(ValueError, match="not a regular file"):
+        srv.browser("upload", element="e2", file=str(tmp_path))
+    with pytest.raises(ValueError, match="needs `file`"):
+        srv.browser("upload", element="e2")
+
+
+def test_a_dry_run_upload_reads_and_sends_nothing(bridge, tmp_path, monkeypatch):
+    cv = tmp_path / "cv.txt"
+    cv.write_text("hello")
+    srv.browser("snapshot", tab=13)
+    monkeypatch.setattr(srv.journal, "dry_run", lambda: True)
+    assert srv.browser("upload", element="e2", file=str(cv)).startswith(
+        "DRY RUN, nothing was delivered: would upload cv.txt (5 bytes)")
+    assert not any(c[0] == "upload" for c in bridge["calls"])
