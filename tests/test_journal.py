@@ -447,3 +447,10 @@ def test_replay_origin_is_recorded(journal_file):
     finally:
         journal.set_origin("")
     assert entries(journal_file)[0]["by"] == "replay"
+
+
+def test_a_text_of_none_is_not_digested():
+    # set_ui passes text=None when it sets a value: there is nothing to hide, and a digest
+    # would make replay refuse the entry as typed text
+    assert journal.redact({"text": None, "value": 60}) == {"text": None, "value": 60}
+    assert journal.redact({"text": ""})["text"]["redacted"] is True

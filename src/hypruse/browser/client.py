@@ -27,6 +27,11 @@ UPLOAD_CHUNK = 640 * 1024
 
 
 def socket_path() -> Path:
+    # HYPRUSE_BROWSER_DIR keeps a browser and the agent that drives it to themselves (the
+    # benchmark's throwaway browser, say), when the host and the server both have it set
+    override = os.environ.get("HYPRUSE_BROWSER_DIR")
+    if override:
+        return Path(override) / "browser.sock"
     runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
     return Path(runtime) / "hypruse" / "browser.sock"
 

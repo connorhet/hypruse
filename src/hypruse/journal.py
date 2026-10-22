@@ -294,7 +294,10 @@ def redact(value: Any) -> Any:
     if text_recorded():
         return value
     if isinstance(value, dict):
-        return {k: _digest(_as_text(v)) if k == "text" else redact(v) for k, v in value.items()}
+        # None is the one `text` that holds nothing (set_ui's when it sets something else);
+        # digesting it would mark the entry as typed text that replay cannot type
+        return {k: _digest(_as_text(v)) if k == "text" and v is not None else redact(v)
+                for k, v in value.items()}
     if isinstance(value, list):
         return [redact(v) for v in value]
     return value
