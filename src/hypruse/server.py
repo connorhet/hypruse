@@ -2292,6 +2292,32 @@ def _size(n: int) -> str:
         else f"{n / 1048576:.1f} MB"
 
 
+# The hypruse-browser each action needs, where the first was older: Chrome keeps running an
+# unpacked extension's old code until it is reloaded, so the version it reports is checked
+# before an action it may not have, rather than failing on a protocol error.
+_EXTENSION_NEEDS = {"upload": (0, 2, 0), "open": (0, 2, 0)}
+
+
+def _version(text: str) -> tuple[int, ...]:
+    try:
+        return tuple(int(part) for part in str(text).split("."))
+    except ValueError:
+        return ()
+
+
+def _guard_extension(hello: dict[str, Any], action: str, background: bool) -> None:
+    need = _EXTENSION_NEEDS.get(action)
+    if need is None or (action == "open" and not background):
+        return
+    have = str(hello.get("extension", ""))
+    if _version(have) < need:
+        want = ".".join(map(str, need))
+        raise ValueError(
+            f"'{action}' needs hypruse-browser {want} or later, and the browser reports "
+            f"{have or 'no version'}: rebuild it and reload it in chrome://extensions"
+            + (", or pass background=false to open the tab in front" if action == "open" else ""))
+
+
 def _browser_failed(exc: Exception) -> NoReturn:
     from hypruse.browser import BrowserError, BrowserUnavailable
 
@@ -2414,6 +2440,7 @@ def browser(
                 return json.dumps(_snapshot_view(snap))
             seen = target.get("on_screen") if target else None
             behind = bg.decide(False, background)  # open: a tab that is not brought forward
+            _guard_extension(client.hello, action, behind)
             if action == "activate" and behind:
                 bg.refuse("'activate' brings a browser tab forward and the browser takes the "
                           "human's focus, which can switch their workspace to it",

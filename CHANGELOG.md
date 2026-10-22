@@ -32,6 +32,10 @@ All notable changes to this project are documented here. The format follows
   `set_ui checked=` ends with the box's reading, like the other changes.
 
 ### Fixed
+- **The browser tool names an outdated extension.** Chrome keeps running an
+  unpacked extension's old code until it is reloaded, so `upload` and a
+  background `open` check the version hypruse-browser reports (0.2.0 or
+  later) and say to reload it, instead of failing on a protocol error.
 - The journal no longer digests a `text` of `None` (set_ui's, when it sets
   something else), which made replay refuse those entries as typed text.
 - The test suite no longer offers the browser tool when the machine running

@@ -27,6 +27,7 @@ SNAP = {
 class FakeClient:
     def __init__(self, state):
         self.s = state
+        self.hello = {"extension": state.get("extension", "0.2.0")}
 
     def __enter__(self):
         return self
@@ -377,4 +378,18 @@ def test_a_dry_run_upload_reads_and_sends_nothing(bridge, tmp_path, monkeypatch)
     monkeypatch.setattr(srv.journal, "dry_run", lambda: True)
     assert srv.browser("upload", element="e2", file=str(cv)).startswith(
         "DRY RUN, nothing was delivered: would upload cv.txt (5 bytes)")
+    assert not any(c[0] == "upload" for c in bridge["calls"])
+
+
+def test_an_older_extension_is_named_before_an_action_it_lacks(bridge, tmp_path):
+    bridge["extension"] = "0.1.0"
+    cv = tmp_path / "cv.txt"
+    cv.write_text("hi")
+    srv.browser("snapshot", tab=13)  # reading works with any version
+    with pytest.raises(ValueError, match=r"needs hypruse-browser 0\.2\.0 .* reports 0\.1\.0"):
+        srv.browser("upload", element="e2", file=str(cv))
+    with pytest.raises(ValueError, match="reload it in chrome://extensions"):
+        srv.browser("open", url="https://example.com/")
+    # opening in front is the old behaviour, which 0.1.0 has
+    assert srv.browser("open", url="https://example.com/", background=False).startswith("opened")
     assert not any(c[0] == "upload" for c in bridge["calls"])
