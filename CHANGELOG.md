@@ -17,6 +17,13 @@ All notable changes to this project are documented here. The format follows
 - **`click_ui` selects a tab in the background.** A tab has no action of
   its own, so it was refused there; it is now selected through its tab
   list's Selection interface.
+- **The browser bridge and an MCP `browser` tool.** The native messaging
+  host for the hypruse-browser extension (`hypruse browser install`), and a
+  `browser` tool over it, offered once the host is registered: list tabs,
+  snapshot a page as numbered elements, click, type and scroll in a tab
+  without bringing it forward, go back and forward, close. `open` and
+  `activate` take the human's focus and need `background=false`; each
+  result reports whether the human's focus moved.
 
 ## [0.13.0] - 2026-10-18
 

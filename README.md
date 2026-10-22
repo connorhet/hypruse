@@ -193,6 +193,28 @@ npx skills add IlyasKhallouki/hypruse -g
 
 `hypruse init` offers the same install. The skill pre-approves only the observation verbs, `doctor`, `--help` and reading the capture files; acting verbs stay behind your agent's own approval prompt, which is the boundary the [Security model](#security-model) leans on.
 
+## The browser
+
+Chrome publishes nothing to the accessibility bus unless it is started with a flag, so `ui` and `click_ui` see an empty window there. The [hypruse-browser](https://github.com/IlyasKhallouki/hypruse-browser) extension fills that gap. Chrome starts `hypruse browser-host` when the extension connects, and the host relays between the extension and a socket in `$XDG_RUNTIME_DIR/hypruse/` that only you can reach. Any local program can then list and switch tabs, read the clickable and typeable things on a page, click them, type into fields, and scroll:
+
+```sh
+hypruse browser install      # register the host with Chrome, Chromium and Brave
+hypruse browser status       # connected: hypruse-browser 0.1.0 in Chrome/151 (chrome)
+```
+
+```python
+from hypruse.browser import BrowserClient
+
+with BrowserClient() as browser:
+    page = browser.snapshot()
+    second = next(e for e in page["elements"] if (e.get("list") or {}).get("index") == 2)
+    browser.click(page["snapshot_id"], second["id"])
+```
+
+A click names a snapshot, so a page that changed in between answers with an error rather than a click on whatever moved into that spot. The extension never reads what is in a field and refuses to type into password or card fields. [hyprsay](https://github.com/IlyasKhallouki/hyprsay) uses this to drive the browser by voice.
+
+Once `hypruse browser install` has registered the host, the MCP server also offers a `browser` tool on the same client (it is left out of the tool list until then, so a session without the extension pays nothing for it). `tabs` lists every tab and says which one you can see; `snapshot` reads a page as numbered elements; `click`, `type` and `scroll` act on a snapshot's element ids in a tab without bringing it forward; `back`, `forward` and `close` act on a tab. `open` and `activate` make the browser take your focus (Hyprland can switch your workspace to it), so they are refused unless the call says `background=false`. Every acting result says whether your focus stayed put. Under `HYPRUSE_BACKGROUND=1` acting on a tab you can see is refused, under `HYPRUSE_CONFINE` every browser action is (a tab cannot be held to a window scope), and browser actions are not replayable, since element ids die with their page.
+
 ## Install
 
 Requirements: Hyprland (both config managers: `hyprland.conf` and the Lua `hyprland.lua` that 0.56 introduced), `grim` (grim 1.5+ on Hyprland 0.54+ lets a window screenshot capture the window itself, and `hypruse doctor` says whether yours can), `wtype` (most Hyprland setups already have both), and [uv](https://docs.astral.sh/uv/). The accessibility tools (`ui`/`marks`/`click_ui`/`set_ui`) use `busctl`, which ships with systemd, to find the accessibility bus, then talk to it over one connection of their own. Optional: `wl-clipboard` for the opt-in clipboard tool, `imagemagick` for numbered `marks` captures.

@@ -2136,6 +2136,270 @@ def _confine_allows() -> Callable[[str], bool] | None:
     return lambda sel: sel in vals or sel.removeprefix("name:") in vals
 
 
+# --- the browser, through the hypruse-browser extension ---------------------------
+
+_BROWSER_OBSERVE = ("tabs", "snapshot")
+_BROWSER_PAGE = ("click", "type", "scroll")
+_BROWSER_TAB = ("activate", "close", "back", "forward")
+_BROWSER_ACTIONS = (*_BROWSER_OBSERVE, *_BROWSER_PAGE, "open", *_BROWSER_TAB)
+_BROWSER_CLASSES = ("chromium", "chrome", "brave")
+_BROWSER_KEEP = 8  # snapshots remembered, newest last
+# snapshot id -> (profile, tab id, {element id: (kind, name)}), for a click or a
+# type that names an element and for the result that says what it was
+_browser_snaps: dict[str, tuple[int, int, dict[str, tuple[str, str]]]] = {}
+
+
+def _browser_enabled() -> bool:
+    """Whether the browser tool is offered: only once `hypruse browser install`
+    has registered the native host, so a session without the extension pays
+    nothing for it in its tool list."""
+    from hypruse.browser import install
+
+    return install.registered()
+
+
+def _browser_client(profile: int) -> Any:
+    from hypruse.browser import BrowserClient, socket_paths
+
+    paths = socket_paths()
+    if not paths:
+        raise ValueError("no browser is connected: start Chrome, Chromium or Brave with the "
+                         "hypruse-browser extension loaded (hypruse browser status checks)")
+    if not 1 <= profile <= len(paths):
+        raise ValueError(f"profile {profile} is not connected: {len(paths)} browser profile"
+                         f"{'s are' if len(paths) > 1 else ' is'} (tabs lists them)")
+    return BrowserClient(paths[profile - 1], timeout=5.0)
+
+
+def _browser_scene() -> tuple[list[dict[str, Any]], set[Any]] | None:
+    """The browser windows Hyprland has, and the workspaces on screen, read
+    once for every tab `_tab_on_screen` judges; None when unreadable."""
+    try:
+        clients, monitors = hyprctl.query("clients"), hyprctl.query("monitors")
+    except Exception:
+        return None
+    windows = [c for c in clients
+               if any(b in str(c.get("class", "")).lower() for b in _BROWSER_CLASSES)]
+    return windows, {hyprctl.workspace_ref(ws) for ws in _shown_workspaces(monitors)}
+
+
+def _tab_on_screen(
+    tab: dict[str, Any], scene: tuple[list[dict[str, Any]], set[Any]] | None
+) -> bool | None:
+    """Whether the human can see this tab: the active tab of a browser window
+    on a workspace that is on screen. An inactive tab is not drawn. None
+    when no browser window's title names the tab (Chrome titles a window
+    after its active tab) or the desktop cannot be read, so a caller that
+    must be sure can refuse."""
+    if not tab.get("active"):
+        return False
+    title = str(tab.get("title") or "")
+    if scene is None or not title:
+        return None
+    windows = [c for c in scene[0] if str(c.get("title", "")).startswith(title)]
+    if not windows:
+        return None
+    return any(hyprctl.workspace_ref(c.get("workspace")) in scene[1] for c in windows)
+
+
+def _remember_snapshot(profile: int, snap: dict[str, Any]) -> None:
+    named = {str(e.get("id")): (str(e.get("kind", "")), str(e.get("name", "")))
+             for e in snap.get("elements") or []}
+    _browser_snaps[str(snap.get("snapshot_id"))] = (profile, int(snap.get("tab_id", 0)), named)
+    while len(_browser_snaps) > _BROWSER_KEEP:
+        _browser_snaps.pop(next(iter(_browser_snaps)))
+
+
+def _snapshot_view(snap: dict[str, Any]) -> dict[str, Any]:
+    """A snapshot as the agent reads it: element ids with what they are,
+    without the viewport rectangles, which are not desktop coordinates."""
+    elements = []
+    for e in snap.get("elements") or []:
+        item = {"id": e.get("id"), "kind": e.get("kind"), "name": e.get("name")}
+        if e.get("list"):
+            lst = e["list"]
+            item["item"] = f"{lst.get('index')} of {lst.get('size')} in {lst.get('group')}"
+        if not e.get("in_view", True):
+            item["below"] = True
+        elements.append(item)
+    view = snap.get("viewport") or {}
+    return {"snapshot": snap.get("snapshot_id"), "tab": snap.get("tab_id"),
+            "title": snap.get("title"), "url": snap.get("url"),
+            "headings": snap.get("headings", ""),
+            "scroll": f"{view.get('scroll_y', 0)} of {view.get('scroll_height', 0)}",
+            "elements": elements}
+
+
+def _browser_failed(exc: Exception) -> NoReturn:
+    from hypruse.browser import BrowserError, BrowserUnavailable
+
+    if isinstance(exc, BrowserUnavailable):
+        raise ValueError(f"{exc}; hypruse browser status checks the bridge") from None
+    assert isinstance(exc, BrowserError)
+    if exc.code == "stale_snapshot":
+        raise ValueError(f"the page changed since that snapshot ({exc.message}); take a new "
+                         "snapshot and use its element ids") from None
+    if exc.code == "refused":  # a password or card field, a URL that is not http(s)
+        raise trust.TrustError(f"the browser extension refused: {exc.message}") from None
+    raise ValueError(f"browser {exc.code}: {exc.message}") from None
+
+
+@journal.journaled(lambda args: "observe" if args.get("action") in _BROWSER_OBSERVE else "act")
+def browser(
+    action: str,
+    tab: int = 0,
+    element: str = "",
+    snapshot: str = "",
+    text: str = "",
+    submit: bool = False,
+    url: str = "",
+    direction: str = "down",
+    profile: int = 1,
+    max_elements: int = 120,
+    settle_ms: int = 0,
+    then: str = "none",
+    background: bool | None = None,
+) -> list[Any] | str:
+    """Read and operate web pages in the human's own Chrome, Chromium or Brave
+    through the hypruse-browser extension: it sees inside pages, which the
+    accessibility tree does not, and works in a tab without bringing it
+    forward. `action`:
+    'tabs' lists every tab (id, title, url, active, on_screen: whether the
+    human can see it); 'snapshot' reads a tab's page (`tab`, default the
+    active tab of the last focused window; `settle_ms` waits for it to stop
+    changing) as numbered elements: links, buttons, fields, tabs, options,
+    with list items numbered ("2 of 20 in g3") so "the second result"
+    needs no site knowledge; 'click' and 'type' act on an `element` id of
+    a snapshot (`snapshot`, default the latest of that tab; `text`, and
+    `submit=true` to press Enter); 'scroll' moves a page `direction`
+    up|down|top|bottom. Element ids belong to one snapshot: after the page
+    changes, take a new one. 'open' opens `url` (http/https) in a new
+    foreground tab and 'activate' brings `tab` forward: both make the
+    browser take the human's focus (the compositor can switch their
+    workspace to it), so they are refused unless `background=false` says
+    the human expects it; to read a page in the background, snapshot a tab
+    that is already open. 'close', 'back' and 'forward' act on `tab`.
+    `profile` picks among connected browser profiles (1 = first). The
+    extension refuses password and card fields and never reads what a
+    field holds. Each acting result says whether the human's focus stayed
+    put. Under HYPRUSE_BACKGROUND=1, acting on a tab the human can see is
+    refused too. `then='snapshot'` appends a fresh snapshot of the tab
+    after click, type, scroll, back or forward."""
+    safety.touch("browser")
+    if action not in _BROWSER_ACTIONS:
+        raise ValueError(f"unknown action {action!r}: {'|'.join(_BROWSER_ACTIONS)}")
+    if then not in ("none", "snapshot"):
+        raise ValueError("then must be 'none' or 'snapshot'")
+    from hypruse.browser import BrowserError, BrowserUnavailable
+
+    acting = action not in _BROWSER_OBSERVE
+    if acting:
+        trust.guard_seat()
+        if trust._explicit_scope() is not None:
+            raise trust.TrustError(
+                "HYPRUSE_CONFINE is set, and a browser tab cannot be held to a window scope, "
+                "so browser actions are refused; read with tabs and snapshot")
+        trust.guard_session_lock(True, False)
+    if action in ("click", "type"):
+        if not element:
+            raise ValueError(f"{action} needs `element`, an id from a snapshot")
+        if not snapshot:
+            mine = [s for s, (p, t, _) in _browser_snaps.items()
+                    if p == profile and (not tab or t == tab)]
+            if not mine:
+                raise ValueError("no snapshot to act on: take one first, and pass its id as "
+                                 "`snapshot` when it came from another session")
+            snapshot = mine[-1]
+        if snapshot in _browser_snaps:
+            tab = _browser_snaps[snapshot][1]
+    if action in ("close", "back", "forward", "activate") and not tab:
+        raise ValueError(f"{action} needs `tab`, an id from tabs")
+    if action == "open" and not url:
+        raise ValueError("open needs `url`")
+    if action == "scroll" and direction not in ("up", "down", "top", "bottom"):
+        raise ValueError("direction must be up, down, top or bottom")
+    try:
+        with _browser_client(profile) as client:
+            tabs = client.tabs()
+            scene = _browser_scene()
+            for t in tabs:
+                t["on_screen"] = _tab_on_screen(t, scene)
+            if action == "tabs":
+                return json.dumps([{k: t.get(k) for k in
+                                    ("id", "title", "url", "active", "on_screen", "window_id")}
+                                   for t in tabs])
+            target = (next((t for t in tabs if t.get("id") == tab), None) if tab
+                      else next((t for t in tabs if t.get("active")), None))
+            if tab and target is None:
+                raise ValueError(f"no tab {tab} in profile {profile}; call tabs")
+            if action == "snapshot":
+                snap = client.snapshot(tab or None, max=max(1, min(max_elements, 1000)),
+                                       settle_ms=max(0, min(settle_ms, 10000)))
+                _remember_snapshot(profile, snap)
+                return json.dumps(_snapshot_view(snap))
+            seen = target.get("on_screen") if target else None
+            if action in ("open", "activate") and bg.decide(False, background):
+                bg.refuse(f"'{action}' brings a browser tab forward and the browser takes the "
+                          "human's focus, which can switch their workspace to it",
+                          "snapshot, click and type work in a tab that is already open")
+            if bg.mode() == bg.GUARANTEE and seen is not False:
+                bg.refuse("that tab is on the human's screen, or it cannot be told that it is not")
+            label = f"tab {target.get('id')} ({target.get('title', '')!r})" if target else "tab"
+            what = ""
+            if element:
+                kind, name = _browser_snaps.get(snapshot, (0, 0, {}))[2].get(element, ("", ""))
+                what = f"{element} ({kind} {name!r})" if name else element
+            plan = {"click": f"click {what} in {label}",
+                    "type": f"type {len(text)} characters into {what} in {label}"
+                            + (" and press Enter" if submit else ""),
+                    "scroll": f"scroll {label} {direction}",
+                    "open": "open a URL in a new foreground tab",
+                    "activate": f"bring {label} forward and focus its window",
+                    "close": f"close {label}", "back": f"go back in {label}",
+                    "forward": f"go forward in {label}"}[action]
+            if journal.dry_run():
+                return f"{_DRY} {plan}"
+            journal.refuse_if_dry("browser")
+            seat = _seat_now()
+            result: dict[str, Any] = {}
+            if action == "click":
+                client.click(snapshot, element)
+            elif action == "type":
+                client.type(snapshot, element, text, submit=submit)
+            elif action == "scroll":
+                result = client.scroll(direction, tab or None)
+            elif action == "open":
+                tab = client.open(url, "new")
+            elif action == "activate":
+                client.activate(tab)
+            elif action == "close":
+                client.close_tab(tab)
+            else:
+                client.history(tab, action)
+            msg = {"click": f"clicked {what} in {label}",
+                   "type": f"typed {len(text)} characters into {what} in {label}"
+                           + (" and pressed Enter" if submit else ""),
+                   "scroll": f"scrolled {label} {direction}",
+                   "open": f"opened tab {tab} in the foreground of the last focused browser "
+                           "window",
+                   "activate": f"brought {label} forward and focused its window",
+                   "close": f"closed {label}", "back": f"went back in {label}",
+                   "forward": f"went forward in {label}"}[action]
+            if result:
+                msg += f"; now at {result.get('scroll_y')} of {result.get('scroll_height')}"
+            if seen and action in (*_BROWSER_PAGE, "back", "forward"):
+                msg += "; this tab is on the human's screen"
+            untouched, warning = _seat_report(seat)
+            msg += (" (the human's focus untouched)" if untouched else "") + warning
+            if then == "snapshot" and action in (*_BROWSER_PAGE, "back", "forward"):
+                snap = client.snapshot(tab or None, settle_ms=800)
+                _remember_snapshot(profile, snap)
+                return [_text(msg), _text(json.dumps(_snapshot_view(snap)))]
+            return msg
+    except (BrowserError, BrowserUnavailable) as exc:
+        _browser_failed(exc)
+
+
 _INTERACTIVE_HELP = """\
 hypruse {version}, an MCP server, not an interactive program.
 
@@ -2755,6 +3019,7 @@ _TITLES = {
     "use_bind": "Run a keybind",
     "sequence": "Run several actions",
     "clipboard": "Clipboard",
+    "browser": "Browser tabs and pages",
 }
 
 
@@ -2777,6 +3042,8 @@ def build_app() -> Any:
         acting = [pointer, keyboard, click_ui, set_ui, hypr, launch, use_bind, sequence]
         if CLIPBOARD:
             acting.append(clipboard)
+        if _browser_enabled():
+            acting.append(browser)
         for acting_tool in acting:
             name = acting_tool.__name__
             app_.tool(annotations=ToolAnnotations(

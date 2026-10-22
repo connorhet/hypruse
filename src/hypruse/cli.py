@@ -159,6 +159,13 @@ def _skill_note() -> tuple[bool, str]:
     return True, "agent skill not installed (hypruse skill install, for shell-driven agents)"
 
 
+def _browser_note() -> tuple[bool, str]:
+    """The bridge to the hypruse-browser extension. Optional, so it never fails the report."""
+    from hypruse.browser import install
+
+    return install.describe(install.status())
+
+
 CHECKS = (
     ("dependencies", _check_deps),
     ("session", _check_session),
@@ -168,6 +175,7 @@ CHECKS = (
     ("window shots", _window_capture_note),
     ("mode", _mode_note),
     ("skill", _skill_note),
+    ("browser", _browser_note),
 )
 
 
@@ -549,7 +557,12 @@ def _unreplayable(entries: list[dict[str, Any]]) -> list[str]:
     reasons = []
     for entry in entries:
         tool, args, seq = entry.get("tool"), _args_of(entry), entry.get("seq", "?")
-        if tool not in journal_module().REPLAYABLE:
+        if tool == "browser":
+            # element ids belong to one snapshot of one page, which a replay
+            # cannot bring back, and an id from it is refused as stale
+            reasons.append(f"seq {seq}: browser actions name elements of a page snapshot that "
+                           "does not outlive the page")
+        elif tool not in journal_module().REPLAYABLE:
             reasons.append(f"seq {seq}: {_safe(tool)} (recorded by a newer hypruse)")
         elif not args:
             reasons.append(f"seq {seq}: {_safe(tool)} has no recorded arguments")
@@ -800,6 +813,9 @@ For the owner:
   replay         re-issue a journal's actions through the same guards;
                  prints the plan and stops unless --execute is given
   skill          path | install [--agent NAME] [--copy] | uninstall
+  browser        install [--browser chrome|chromium|brave] | uninstall | status:
+                 the native host for the hypruse-browser extension
+  browser-host   the relay itself; Chrome starts it, you never need to
   serve          the MCP stdio server, explicitly
   --version
 """
