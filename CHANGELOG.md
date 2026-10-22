@@ -32,6 +32,15 @@ All notable changes to this project are documented here. The format follows
   `set_ui checked=` ends with the box's reading, like the other changes.
 
 ### Fixed
+- **`click_ui` no longer calls a scroll a press.** A GTK 4 list or grid cell
+  (Nautilus's files) offers only `listitem.scroll-to`; a background click
+  now selects it through its container, as a real click would, and says it
+  only scrolled when there is no container to select through.
+- **`browser` snapshots carry `text`**, what the viewport shows (frames on
+  it included, fields never read), with hypruse-browser 0.3.0: the benchmark
+  showed agents that paid or applied could not see the confirmation.
+- The benchmark's agent gets screenshots as images: it has no tool to open
+  the file a screenshot otherwise comes back as.
 - **The browser tool names an outdated extension.** Chrome keeps running an
   unpacked extension's old code until it is reloaded, so `upload` and a
   background `open` check the version hypruse-browser reports (0.2.0 or

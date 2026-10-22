@@ -74,7 +74,9 @@ class Env:
         self.procs: list[subprocess.Popen] = []
         self.windows: list[str] = []
         self.chromium: str | None = None
-        self.agent_env = {"HYPRUSE_BACKGROUND": "1", "HYPRUSE_BROWSER_DIR": str(self.browser_dir)}
+        # the agent has no tool to open a file, so a screenshot must come back as an image
+        self.agent_env = {"HYPRUSE_BACKGROUND": "1", "HYPRUSE_BROWSER_DIR": str(self.browser_dir),
+                          "HYPRUSE_SCREENSHOT_MODE": "image"}
 
     # every helper launches through hypruse itself, onto the agent's workspaces
     def _launch(self, *command: str, wait: int = 15) -> str:

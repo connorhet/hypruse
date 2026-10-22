@@ -1365,17 +1365,23 @@ def _click_in_background(
     # refuses what the real run would
     bus = a11y.connect()
     pick = None  # (container, index): a tab or row its container selects
-    if not is_text and not a11y.has_action(bus, svc, path):
-        # a tab offers no action of its own (GTK's notebook tabs): its tab
-        # list picks it through the Selection interface instead
-        pick = a11y.selection_of(bus, svc, path)
-        if pick is None:
-            bg.refuse("this control has no accessibility action")
+    if not is_text:
+        names = a11y.actions(bus, svc, path) if a11y.has_action(bus, svc, path) else []
+        # a tab offers no action of its own (GTK's notebook tabs), and a GTK 4
+        # list or grid cell only one that scrolls it into view
+        # (listitem.scroll-to): a click there selects it, which its container
+        # does through the Selection interface
+        if not names or all("scroll" in n.lower() for n in names):
+            pick = a11y.selection_of(bus, svc, path)
+            if pick is None and not names:
+                bg.refuse("this control has no accessibility action")
     # an action that only focuses (Qt WebEngine's list rows offer just
-    # SetFocus) does not press: the result must not say it did
+    # SetFocus), or only scrolls, does not press: the result must not say it did
     action = "" if is_text or pick else a11y.action_name(bus, svc, path)
     focus_only = "focus" in action.lower()
-    how = f"its accessibility action {action!r}" if focus_only else "its accessibility action"
+    scroll_only = "scroll" in action.lower()
+    how = (f"its accessibility action {action!r}" if focus_only or scroll_only
+           else "its accessibility action")
     if pick is not None:
         how = "its container's accessibility selection"
     if is_text:
@@ -1396,7 +1402,8 @@ def _click_in_background(
                 instead,
             )
     if journal.dry_run():
-        verb_ = "select" if pick else "focus" if is_text or focus_only else "press"
+        verb_ = ("select" if pick else "focus" if is_text or focus_only
+                 else "scroll to" if scroll_only else "press")
         return _acted(f"{_DRY} {verb_} {desc} in {cls} through {how}",
                       then, window=client["address"])
     seat = _seat_now()
@@ -1417,12 +1424,16 @@ def _click_in_background(
         seen = f"; now selected: {', '.join(map(repr, now))}" if now else ""
         return _acted(f"selected {desc} through {how} ({paren}) in {cls}{seen}{warning}",
                       then, window=client["address"], fallback=False)
-    verb = "focused" if is_text or focus_only else "pressed"
+    verb = ("focused" if is_text or focus_only else "scrolled to" if scroll_only
+            else "pressed")
     untouched, warning = _seat_report(seat)
     paren = "no pointer, the human's focus untouched" if untouched else "no pointer"
     msg = f"{verb} {desc} through {how} ({paren}) in {cls}"
     if not any(c.get("address") == client["address"] for c in hyprctl.query("clients")):
         msg += "; the window closed"
+    elif scroll_only:  # it moved into view; nothing was pressed or picked
+        msg += ("; it is only scrolled into view, not pressed or selected, and the app "
+                "offers no other way to act on it here: check with ui")
     elif focus_only:  # what the app reports, not proof a key reaches it or acts
         msg += ("; the app now reports it focused (it is not pressed; check what a key "
                 "does with ui)" if a11y.is_focused(bus, svc, path) else
@@ -2238,6 +2249,8 @@ def _snapshot_view(snap: dict[str, Any]) -> dict[str, Any]:
     return {"snapshot": snap.get("snapshot_id"), "tab": snap.get("tab_id"),
             "title": snap.get("title"), "url": snap.get("url"),
             "headings": snap.get("headings", ""),
+            # what the page says (a confirmation, an error); hypruse-browser 0.3.0+
+            **({"text": snap["text"]} if snap.get("text") else {}),
             "scroll": f"{view.get('scroll_y', 0)} of {view.get('scroll_height', 0)}",
             "elements": elements}
 
@@ -2358,7 +2371,8 @@ def browser(
     active tab of the last focused window; `settle_ms` waits for it to stop
     changing) as numbered elements: links, buttons, fields, tabs, options,
     with list items numbered ("2 of 20 in g3") so "the second result"
-    needs no site knowledge; elements inside the page's frames (an embedded
+    needs no site knowledge, plus `text`, what the viewport shows, to read
+    what a page says back after an action; elements inside the page's frames (an embedded
     sign-in or payment form) are listed too, with ids like "f12.e3";
     'click' and 'type' act on an `element` id of
     a snapshot (`snapshot`, default the latest of that tab; `text`, and

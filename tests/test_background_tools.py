@@ -64,6 +64,9 @@ def wired_bg(monkeypatch):
     monkeypatch.setattr(srv.a11y, "connect", lambda: object())
     monkeypatch.setattr(srv.a11y, "has_action", lambda bus, svc, path: s["has_action"])
     s["action_name"], s["focused_after"] = "click", False
+    # every action the control offers, as the real a11y.actions reads them
+    monkeypatch.setattr(srv.a11y, "actions",
+                        lambda bus, svc, path: [s["action_name"]] if s["has_action"] else [])
     monkeypatch.setattr(srv.a11y, "action_name",
                         lambda bus, svc, path, index=0: s["action_name"])
     monkeypatch.setattr(srv.a11y, "is_focused", lambda bus, svc, path: s["focused_after"])
@@ -1308,3 +1311,29 @@ def test_set_ui_dry_runs_change_nothing(setter, monkeypatch):
 def test_set_ui_is_a_sequence_step(setter):
     srv.sequence([{"op": "set_ui", "name": "Save", "window": "0xa", "value": 30}], then="none")
     assert setter["set_values"] == [30]
+
+
+# --- a cell whose only action scrolls it into view (GTK 4 lists and grids) --------
+
+
+def test_a_scroll_only_cell_is_selected_through_its_container(wired_bg):
+    wired_bg["action_name"] = "listitem.scroll-to"
+    wired_bg["pick"] = (("svc", "/grid"), 2)
+    wired_bg["selected"] = ["Save"]
+    out = str(srv.click_ui(name="Save", window="0xa"))
+    assert wired_bg["selections"] == [("svc", "/grid", 2)] and wired_bg["actions"] == []
+    assert out.startswith("selected ") and "now selected: 'Save'" in out
+
+
+def test_a_scroll_only_cell_without_a_container_is_not_called_pressed(wired_bg):
+    wired_bg["action_name"] = "listitem.scroll-to"
+    out = str(srv.click_ui(name="Save", window="0xa"))
+    assert wired_bg["actions"] == [("svc", "/save")]
+    assert out.startswith("scrolled to ") and "not pressed or selected" in out
+    assert "pressed push button" not in out
+
+
+def test_a_dry_run_says_it_would_only_scroll(wired_bg, monkeypatch):
+    monkeypatch.setattr(srv.journal, "dry_run", lambda: True)
+    wired_bg["action_name"] = "listitem.scroll-to"
+    assert "would scroll to" in str(srv.click_ui(name="Save", window="0xa"))

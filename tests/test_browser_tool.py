@@ -14,7 +14,8 @@ from hypruse.browser import BrowserError, install
 
 SNAP = {
     "snapshot_id": "s1-abc", "tab_id": 12, "url": "https://example.com/", "title": "Example",
-    "headings": "Example Domain", "viewport": {"scroll_y": 0, "scroll_height": 900},
+    "headings": "Example Domain", "text": "Example Domain Paid",
+    "viewport": {"scroll_y": 0, "scroll_height": 900},
     "elements": [
         {"id": "e1", "role": "link", "name": "More information", "kind": "link",
          "rect": [1, 2, 3, 4], "in_view": True},
@@ -393,3 +394,8 @@ def test_an_older_extension_is_named_before_an_action_it_lacks(bridge, tmp_path)
     # opening in front is the old behaviour, which 0.1.0 has
     assert srv.browser("open", url="https://example.com/", background=False).startswith("opened")
     assert not any(c[0] == "upload" for c in bridge["calls"])
+
+
+def test_a_snapshot_carries_what_the_page_says(bridge):
+    view = json.loads(srv.browser("snapshot", tab=13))
+    assert view["text"] == "Example Domain Paid"
