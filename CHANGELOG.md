@@ -32,11 +32,18 @@ All notable changes to this project are documented here. The format follows
   `set_ui checked=` ends with the box's reading, like the other changes.
 
 ### Fixed
+- The journal no longer digests a `text` of `None` (set_ui's, when it sets
+  something else), which made replay refuse those entries as typed text.
 - The test suite no longer offers the browser tool when the machine running
   it has the browser host installed: the read-only tests reload the server
   module, which undid the stub that keeps it off.
 
 ### Added
+- **A benchmark** (`bench/`): twelve everyday tasks (a GTK form, web pages
+  with a cross-origin frame and an upload, Nautilus), each handed to a
+  separate `claude -p` run with only hypruse's tools under
+  `HYPRUSE_BACKGROUND=1`, and judged by the app's own state. Browser tasks
+  use a throwaway Chromium, kept apart by the new `HYPRUSE_BROWSER_DIR`.
 - **`browser upload`** puts a local file in a page's file field, with no
   picker, through a hypruse-browser that has `page.upload`. The agent picks
   the file; hypruse refuses credentials (`.env`, `.pem`/`.key` and the like,
