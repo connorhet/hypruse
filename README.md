@@ -65,6 +65,7 @@ Design decisions:
 | `set_ui` | Change a control through its accessibility interface, in any window and never with the pointer: move a slider or spin button to a `value`, `select` an item in a tab list, combo box or list (by name, anywhere in a window, since tab lists are often unnamed), replace a field's whole `text`, set a box to `checked` true or false (pressed only when it is not already), or run one of its named `action`s. Each change is read back from the tree |
 | `sequence` | Run an ordered list of actions (pointer/keyboard/click_ui/set_ui/hypr/wait_for) in one call; stops the moment the desktop changes in a way the current step did not expect, so a click/type/enter micro-sequence costs one round-trip instead of several |
 | `wait_for` | Block on real compositor events (window open/close, workspace change, title change, layer surfaces appearing/closing, urgency, screen sharing on/off) with a match filter and timeout; a filtered wait whose condition already holds (window already gone, workspace already active, layer already mapped) answers instantly with `already: true` instead of missing an event that fired before it subscribed. Replaces sleep-and-hope in multi-step automations |
+| `browser` | Read and operate web pages in your own Chrome, Chromium or Brave through the hypruse-browser extension, in tabs you are not looking at: list tabs, snapshot a page (frames included) as numbered elements, click, type, scroll, upload a file, open a tab behind yours. Offered once `hypruse browser install` has registered the host: see [The browser](#the-browser) |
 | `clipboard` | Read or write the text clipboard via `wl-clipboard`; opt-in, exists only with `HYPRUSE_CLIPBOARD=1` in the server env |
 
 The acting tools (`pointer`, `keyboard`, `click_ui`, `set_ui`, `hypr`, `use_bind`, `sequence`) take an optional `then` argument that appends the result to the same call, so the agent sees the effect without a second round-trip: `then='desktop'` adds a fresh semantic snapshot (~20 ms, cheap, best for window/focus changes), `then='screenshot'` a stable capture (best for visual changes), `then='ui'` the acted-on window's controls with their current values (a few hundred exact tokens, best after typing or toggling; `click_ui` reads the window it clicked even if the click handed focus to a dialog, the others read the focused window), `then='none'` nothing (the default everywhere except `sequence`, which defaults to `'desktop'`).
@@ -158,14 +159,14 @@ A press on a check box or slider that the app ignored reads `no change seen`. A 
 - For each key, `sendshortcut` moves keyboard focus to the target and back inside one compositor step, so your own typing cannot mix in. Your app does see its focus leave and come back, which most apps ignore; a few close an open menu.
 - `sendshortcut` is refused for XWayland windows, because Hyprland delivers the key to the focused window instead when both are XWayland.
 - With several keyboard layouts, `sendshortcut` works only while you are on the first one. Hyprland finds each key on the layout in use but the app reads it on the first, so on another layout different characters would arrive, and hypruse refuses instead. Text through the accessibility interface does not depend on the layout.
-- Web pages in the background need the browser bridge, which comes in a later release.
+- Web pages are reached through the browser bridge rather than the accessibility tree, which Chrome leaves empty without a flag: see [The browser](#the-browser).
 - While the session is locked, background actions are refused like all other input.
 
 Every trust layer applies to the background paths: confinement checks the target window, the auth guard refuses a background press or key in an authentication dialog, and typing into a password field the accessibility tree shows needs `allow_auth=true` (an app with no tree cannot be checked, as in the foreground). You cannot see background work, so for anything unattended set `HYPRUSE_BACKGROUND=1`: input stays on the agent's workspaces, hypruse's own input never takes your screen (an app the agent launches can, and the result warns), the journal keeps every result with its method, and `HYPRUSE_MARK` tells you when the agent opens a window.
 
 ## Shell verbs and the agent skill
 
-Not every agent speaks MCP, and the ones that do increasingly prefer a command line: a tool list costs a few thousand tokens per session before the first call, a shell verb costs nothing until it runs. So the same sixteen tools are verbs, going through the same functions the MCP server registers, with the same trust guards, journal and activity beacon:
+Not every agent speaks MCP, and the ones that do increasingly prefer a command line: a tool list costs a few thousand tokens per session before the first call, a shell verb costs nothing until it runs. So the same sixteen tools are verbs (all but `browser`, which shell scripts reach through the Python client below, while `hypruse browser` is its install and status command), going through the same functions the MCP server registers, with the same trust guards, journal and activity beacon:
 
 ```sh
 hypruse desktop                                  # one line per monitor, workspace, window, layer
@@ -199,7 +200,7 @@ Chrome publishes nothing to the accessibility bus unless it is started with a fl
 
 ```sh
 hypruse browser install      # register the host with Chrome, Chromium and Brave
-hypruse browser status       # connected: hypruse-browser 0.1.0 in Chrome/151 (chrome)
+hypruse browser status       # connected: hypruse-browser 0.2.0 in Chrome/151 (chrome)
 ```
 
 ```python
@@ -212,6 +213,8 @@ with BrowserClient() as browser:
 ```
 
 A click names a snapshot, so a page that changed in between answers with an error rather than a click on whatever moved into that spot. The extension never reads what is in a field and refuses to type into password or card fields. [hyprsay](https://github.com/IlyasKhallouki/hyprsay) uses this to drive the browser by voice.
+
+Uploads, frames and opening a tab in the background need hypruse-browser 0.2.0 or later ([this fork](https://github.com/connorhet/hypruse-browser) until upstream has them). Chrome keeps running an unpacked extension's old code until you reload it in `chrome://extensions`, so after rebuilding it, reload it; the `browser` tool names the version it found when an action needs a newer one.
 
 Once `hypruse browser install` has registered the host, the MCP server also offers a `browser` tool on the same client (it is left out of the tool list until then, so a session without the extension pays nothing for it). `tabs` lists every tab and says which one you can see; `snapshot` reads a page as numbered elements, including those inside its frames (`f12.e3`; needs a hypruse-browser that reads frames); `click`, `type` and `scroll` act on a snapshot's element ids in a tab without bringing it forward; `upload` puts a local file in a page's file field without a picker (any file the session can read, up to 10 MB, as Claude in Chrome allows, and never a credential: `.env`, keys, anything under `.ssh`, `.gnupg`, `.aws` and the like, or a file with several hard links, even behind a symlink). `back`, `forward` and `close` act on a tab. `open` puts a new tab behind the active one, so your view stays put (it needs a hypruse-browser with `where: "background"`; `background=false` opens it in front). `activate` makes the browser take your focus (Hyprland can switch your workspace to it), so it is refused unless the call says `background=false`. Every acting result says whether your focus stayed put. Under `HYPRUSE_BACKGROUND=1` acting on a tab you can see is refused, under `HYPRUSE_CONFINE` every browser action is (a tab cannot be held to a window scope), and browser actions are not replayable, since element ids die with their page.
 
@@ -381,6 +384,10 @@ The background suite opens yad forms on the agent's workspaces, drives them in t
 
 The input e2e is deliberately manual: it borrows your cursor and keyboard, counts down, proves click/scroll/type delivery by reading the target terminal's screen back over kitty remote control, and restores your focus.
 
+## Benchmark
+
+`uv run python bench/run.py` hands twelve everyday tasks (a GTK form, web pages with a cross-origin frame and an upload, renaming a file in Nautilus) to separate Claude Code runs that have only hypruse's tools, under `HYPRUSE_BACKGROUND=1`, and judges each by what the app itself holds afterwards. It uses a throwaway browser and costs real API money; see [bench/README.md](bench/README.md).
+
 ## Roadmap
 
 Grounded in measured hot-path latencies and the finding that LLM calls are 76 to 96% of computer-use task latency ([OSWorld-Human](https://arxiv.org/abs/2506.16042)), so cutting round-trips beats shaving milliseconds. The round-trip work that framing motivated has largely shipped: `sequence`, act-and-observe `then=` (including `then='ui'`), and the accessibility-tree tools (`ui`, `marks`, `click_ui`) that target controls by name with no screenshot. What remains:
@@ -398,10 +405,6 @@ Grounded in measured hot-path latencies and the finding that LLM calls are 76 to
 - Wider accessibility coverage: close the gaps the `ui` and `marks` tools hit today, chiefly GTK's newer combo boxes that publish neither their text nor selection (so a rendered dropdown value still needs a screenshot), plus AT-SPI value-change events so `then='ui'` can report a control settling without a poll.
 - Notifications: read recent desktop-notification content and history, not just wait for the popup to appear (`wait_for` already matches `layer_open` on the notification namespace).
 
-**Background**
-
-- Web pages in the background, through the browser bridge (an extension and a native messaging host).
-
 **Trust**
 
 - `record` tool: a scoped GIF or mp4 of the agent driving the desktop, via wf-recorder (a wlroots-family binary like grim), a visual companion to the [journal](#the-record-journal-dry-run-replay).
@@ -414,7 +417,7 @@ Grounded in measured hot-path latencies and the finding that LLM calls are 76 to
 **Measurement**
 
 - Zoom-loop precision benchmark: measure click accuracy of the coarse-to-fine loop against known targets.
-- End-to-end task-success benchmark on Hyprland (OSWorld-style): the deferred bigger sibling of the zoom-loop microbenchmark, scoring full multi-step tasks through the real MCP surface so the a11y-versus-vision and round-trip work is judged on task completion, not latency alone.
+- A bigger task-success benchmark: [bench/](bench/README.md) has twelve everyday tasks judged by the apps' own state; OSWorld-style breadth (more apps, multi-step tasks, Qt and Electron) is next, the deferred bigger sibling of the zoom-loop microbenchmark, scoring full multi-step tasks through the real MCP surface so the a11y-versus-vision and round-trip work is judged on task completion, not latency alone.
 
 ## Related projects
 

@@ -46,6 +46,11 @@ src/hypruse/
   session.py     discovers HYPRLAND_INSTANCE_SIGNATURE / WAYLAND_DISPLAY
                  from runtime-dir sockets when the host stripped the env
   safety.py      activity beacon + kill-switch semantics
+  browser/       the bridge to the hypruse-browser extension: the native
+                 messaging host Chrome starts (host.py, framing.py), the
+                 socket client (client.py, uploads in chunks), and
+                 `hypruse browser install` (install.py); server.browser
+                 is the MCP tool on top
 ```
 
 Rule of thumb: `server.py` validates and narrates; everything real happens

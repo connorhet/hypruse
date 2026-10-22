@@ -27,7 +27,7 @@ Every verb is `hypruse <verb> [args]`. `hypruse --help` lists every verb and
 `hypruse <verb> [<action>] --help` is the ground truth for its flags; read it
 before guessing. Observation verbs print one plain line per fact; acting verbs print
 one result line and exit 0 only when the action was delivered. The same
-sixteen tools exist as an MCP server (`claude mcp add -s user hypruse -- uvx
+sixteen tools (seventeen once the browser bridge is installed) exist as an MCP server (`claude mcp add -s user hypruse -- uvx
 hypruse`); this CLI is for agents that run shell commands.
 
 ## Before anything
