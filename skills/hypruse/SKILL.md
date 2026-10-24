@@ -3,25 +3,34 @@ name: hypruse
 description: >
   Sees and drives the live Hyprland (Wayland) desktop through the hypruse CLI:
   lists windows and workspaces, focuses, moves, closes and launches apps over
-  IPC, takes screenshots and zooms, reads GTK/Qt controls by name from the
-  accessibility tree and clicks them, types text, presses shortcuts, runs the
-  owner's keybinds, waits for compositor events, reads the clipboard. Use it
-  whenever a task needs to look at the screen, operate a GUI application, or
-  manage windows or workspaces on Hyprland (including Omarchy): "open X",
-  "click the Y button", "what is on my screen", "switch to workspace 3",
-  "type this into Z", "screenshot that window", "fill in this form", "close
-  the terminal". Not for editing Hyprland or Omarchy config files (use the
-  omarchy skill), and not for web pages when a browser tool is available.
+  IPC, takes screenshots and zooms, reads GTK, Qt and Electron controls by
+  name from the accessibility tree and presses, ticks, selects and sets them
+  (in the background on the agent's own workspaces), types text, presses
+  shortcuts, runs the owner's keybinds, waits for compositor events, reads
+  the clipboard, and reads and operates pages in the owner's Chrome through
+  its browser tool. Use it whenever a task needs to look at the screen,
+  operate a GUI application or a web page in the owner's browser, or manage
+  windows or workspaces on Hyprland (including Omarchy): "open X", "click the
+  Y button", "what is on my screen", "switch to workspace 3", "type this into
+  Z", "screenshot that window", "fill in this form", "close the terminal".
+  Not for editing Hyprland or Omarchy config files (use the omarchy skill).
 license: MIT
 compatibility: Linux with a running Hyprland session and the hypruse CLI on PATH (AUR hypruse, uv tool install hypruse, or pipx install hypruse). Needs grim and wtype; ui, marks, click_ui and set_ui need an AT-SPI bus; marks needs imagemagick.
-allowed-tools: Bash(hypruse doctor:*) Bash(hypruse desktop:*) Bash(hypruse screenshot:*) Bash(hypruse zoom:*) Bash(hypruse ui:*) Bash(hypruse marks:*) Bash(hypruse binds:*) Bash(hypruse wait_for:*) Bash(hypruse wait-for:*) Bash(hypruse --help) Read
+allowed-tools: Bash(hypruse doctor:*) Bash(hypruse desktop:*) Bash(hypruse screenshot:*) Bash(hypruse zoom:*) Bash(hypruse ui:*) Bash(hypruse marks:*) Bash(hypruse binds:*) Bash(hypruse wait_for:*) Bash(hypruse wait-for:*) Bash(hypruse --help) Read mcp__hypruse__desktop mcp__hypruse__screenshot mcp__hypruse__zoom mcp__hypruse__ui mcp__hypruse__marks mcp__hypruse__binds mcp__hypruse__wait_for
 metadata:
   author: IlyasKhallouki
   version: "0.13.0"
-  homepage: https://github.com/IlyasKhallouki/hypruse
+  homepage: https://github.com/connorhet/hypruse
 ---
 
 # hypruse: hands on the Hyprland desktop
+
+**If the hypruse MCP tools are available (`mcp__hypruse__desktop`,
+`mcp__hypruse__click_ui`, ...), call those, not the CLI.** Each verb below is
+the tool of the same name with the same arguments (`--window ADDR` is
+`window="ADDR"`, `--then ui` is `then="ui"`), the results read the same, and
+everything in this skill applies to both. A refusal comes back as a tool
+error instead of exit code 3. The `browser` tool exists only over MCP.
 
 Every verb is `hypruse <verb> [args]`. `hypruse --help` lists every verb and
 `hypruse <verb> [<action>] --help` is the ground truth for its flags; read it
@@ -48,7 +57,8 @@ they are visible; screenshot when visibility matters.
 |---|---|---|
 | switch workspace; focus, move, close, fullscreen, float a window | `hypruse hypr ...` | IPC, milliseconds, exact, no image |
 | start an app and get its window address | `hypruse launch CMD [--workspace N]` | blocks on the real openwindow event; opens on the agent's own workspace unless told otherwise |
-| click a named control in a GTK/Qt app | `hypruse click_ui NAME --window ADDR` | coordinate comes from the accessibility tree, one call |
+| read or operate a web page in the owner's Chrome | the `browser` tool (MCP): `tabs`, `snapshot`, then `click`/`type`/`upload` on an element id | sees inside pages and frames, acts in a tab without bringing it forward |
+| click a named control in a GTK, Qt or Electron app | `hypruse click_ui NAME --window ADDR` | coordinate comes from the accessibility tree, one call |
 | set a slider, pick a tab or combo item, replace a field, tick a box | `hypruse set_ui NAME --window ADDR --value N` (or `--select ITEM`, `--text T`, `--checked true`) | no pointer, works in any window; `--select ITEM --window ADDR` needs no NAME |
 | read a form's state, list what is clickable | `hypruse ui --window ADDR [--name N]` | a few hundred exact tokens, no image |
 | see the clickable controls numbered | `hypruse marks --window ADDR`, then `hypruse click_ui --mark N` | numbered screenshot plus legend |
@@ -83,12 +93,25 @@ background: their cursor, keyboard focus and workspace stay where they are.
   workspaces (99 down to 90 unless the owner set HYPRUSE_AGENT_WORKSPACES),
   out of the human's sight. Do your work there.
 - `click_ui NAME --window ADDR` presses the control through the
-  accessibility tree, and `keyboard ... --window ADDR` types into the
-  window's text field or sends the keys to that window alone. The result
-  line says which method it used and what it read back. A line ending in
-  `WARNING: the human's focused window changed` means their focus moved
-  during the action (the app brought a window forward, or the human
-  switched): stop and tell the user.
+  accessibility tree, `set_ui` changes it, and `keyboard ... --window ADDR`
+  types into the window's text field or sends the keys to that window
+  alone. The result line says which method it used and what it read back.
+- hypruse stops the target window from taking the human's focus while it
+  acts (some apps ask to be brought forward when a field takes focus). If
+  the window takes it anyway, hypruse gives it straight back, and the line
+  ends `WARNING: ADDR took the human's focus during this action, and
+  hypruse gave it straight back`: mention it to the user and go on. A line
+  ending `WARNING: the human's focused window changed` means focus moved to
+  some other window (the app opened one, or the human switched): stop and
+  tell the user.
+- Electron apps (VS Code, Obsidian, Signal) show their controls only when
+  started for it. `launch` does that, so open them with `launch`; one the
+  human started shows no tree, and `ui` says so: restart it only if the
+  user agrees. In the background their buttons, tabs, check boxes and
+  drop-downs work through `click_ui` and `set_ui`, but typing does not
+  (Chromium drops keys sent to an unfocused window): `keyboard` and
+  `set_ui --text` refuse there, so ask the user, or for a web page use the
+  `browser` tool.
 - Keys (`keyboard key`, or text that goes key by key) reach the control
   the app itself has focused, not the field text went into: run
   `click_ui FIELD --window ADDR` first, then send the keys.
@@ -196,8 +219,29 @@ apps and Electron/Chrome started without `--force-renderer-accessibility`.
 opens itself has one; for one the human started, `ui` says so, and only
 the human should agree to a restart. Otherwise fall back to screenshot,
 zoom, pointer. Electron apps take clicks, ticks and drop-down choices in the
-background but not typing (`keyboard` and `set_ui text` refuse there). For web pages prefer a browser tool
-if one is installed; hypruse is for the desktop around the browser.
+background but not typing (`keyboard` and `set_ui text` refuse there).
+
+## Web pages: the browser tool
+
+For a page in the owner's Chrome, Chromium or Brave, use the `browser` MCP
+tool (offered once the owner ran `hypruse browser install` and loaded the
+hypruse-browser extension). It reads inside pages, frames included, and
+acts in a tab without bringing it forward.
+
+1. `browser(action="tabs")`: every tab, and `on_screen` for the ones the
+   human can see. To work beside them, `open` a URL: the new tab is not
+   brought forward. Act on a tab the human is looking at only when asked.
+2. `browser(action="snapshot", tab=N)`: numbered elements (ids like `e12`,
+   `f3.e4` inside a frame; list items say "2 of 20"), plus `text`, what the
+   page shows. Ids belong to that snapshot: after the page changes, take
+   another.
+3. `click`, `type` (`submit=true` presses Enter) or `upload` (`file`, an
+   absolute path) on an element id; pass `then="snapshot"` and read `text`
+   to confirm the page took it ("Paid", "Application sent").
+
+`activate` takes the human's focus and is refused unless they asked for it
+(`background=false`). An error naming an outdated extension means the
+owner must reload hypruse-browser in chrome://extensions: tell the user.
 
 ## References
 
