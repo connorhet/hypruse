@@ -135,7 +135,16 @@ def wired_bg(monkeypatch):
     s["toolkit"] = ("gtk", "3.24.52")
     s["focus_on_activate"] = 0
     monkeypatch.setattr(srv.a11y, "toolkit", lambda bus, svc: s["toolkit"])
-    monkeypatch.setattr(srv, "_focus_on_activate", lambda addr="": s["focus_on_activate"])
+    monkeypatch.setattr(srv, "_focus_on_activate", lambda: s["focus_on_activate"])
+    # the per-window focus_on_activate hold; "hold_fails" is a compositor that refuses it
+    s["props"], s["hold_fails"] = [], False
+
+    def set_prop(addr, prop, value):
+        if s["hold_fails"]:
+            raise srv.hyprctl.HyprctlError("unknown request")
+        s["props"].append((addr, prop, value))
+
+    monkeypatch.setattr(srv.hyprctl, "set_window_prop", set_prop)
     # a tab's container: (container, index) that selects it, None for a plain control
     s["pick"], s["selected"], s["selections"] = None, [], []
     monkeypatch.setattr(srv.a11y, "selection_of", lambda bus, svc, path: s["pick"])
@@ -819,6 +828,7 @@ def test_focusing_a_gtk3_field_is_refused_when_hyprland_focuses_on_activate(wire
     # misc:focus_on_activate turns that into a switch of the human's view
     wired_bg["role"] = "text"
     wired_bg["focus_on_activate"] = 1
+    wired_bg["hold_fails"] = True  # nothing stops the window coming forward
     with pytest.raises(srv.trust.TrustError, match="focus_on_activate"):
         srv.click_ui(name="Name", window="0xa")
     assert wired_bg["grabbed"] == []
@@ -973,16 +983,70 @@ def test_focusing_is_refused_where_the_window_could_come_forward(wired_bg, toolk
     wired_bg["role"] = "text"
     wired_bg["toolkit"] = toolkit
     wired_bg["focus_on_activate"] = 1
+    wired_bg["hold_fails"] = True
     with pytest.raises(srv.trust.TrustError, match="focus_on_activate"):
         srv.click_ui(name="Name", window="0xa")
 
 
-def test_the_window_rule_for_focus_on_activate_is_read(monkeypatch):
+def test_focus_on_activate_is_read_from_the_option_alone(monkeypatch):
+    # getprop answers false for a window property nothing set, so a window's
+    # own reading cannot show it is safe; only the option is read
+    asked = []
     monkeypatch.setattr(srv.hyprctl, "query", lambda what: (
-        {"focus_on_activate": True} if what.startswith("getprop address:0xa")
-        else {"option": "misc:focus_on_activate", "int": 0}))
-    assert srv.__dict__["_focus_on_activate"]("0xa") == 1
-    assert srv.__dict__["_focus_on_activate"]() == 0
+        asked.append(what) or {"option": "misc:focus_on_activate", "int": 1}))
+    assert srv.__dict__["_focus_on_activate"]() == 1
+    assert asked == ["getoption misc:focus_on_activate"]
+
+
+def test_the_hold_lets_a_gtk3_field_take_focus_in_the_background(wired_bg):
+    # with the window's focus_on_activate off, GTK 3 presenting its window
+    # asks for focus that Hyprland does not grant
+    wired_bg["role"] = "text"
+    wired_bg["focus_on_activate"] = 1
+    srv.click_ui(name="Name", window="0xa")
+    assert wired_bg["grabbed"] == [("svc", "/name")]
+    assert wired_bg["props"] == [("0xa", "focus_on_activate", "0")]  # agent workspace: kept
+
+
+def test_the_hold_is_handed_back_on_a_window_of_the_humans(wired_bg, monkeypatch):
+    monkeypatch.setattr(srv.bg, "on_agent_workspace", lambda client: False)
+    srv.click_ui(name="Save", window="0xa")
+    assert wired_bg["props"] == [("0xa", "focus_on_activate", "0"),
+                                 ("0xa", "focus_on_activate", "unset")]
+
+
+def test_background_keys_hold_the_focus_too(wired_bg):
+    srv.keyboard("key", keys="ctrl+n", window="0xa")
+    assert wired_bg["props"] == [("0xa", "focus_on_activate", "0")]
+
+
+def test_a_rehearsal_sets_no_hold(wired_bg, monkeypatch):
+    monkeypatch.setattr(srv.journal, "dry_run", lambda: True)
+    srv.click_ui(name="Save", window="0xa")
+    assert wired_bg["props"] == []
+
+
+def test_focus_the_acted_window_took_is_given_back(wired_bg, monkeypatch):
+    wired_bg["seat_after"] = ({"address": "0xa"}, {"id": 99})
+    focused = []
+
+    def dispatch(name, *args):
+        focused.append((name, args))
+        wired_bg["seat_after"] = None  # the seat reads as it was
+
+    monkeypatch.setattr(srv.hyprctl, "dispatch", dispatch)
+    out = str(srv.click_ui(name="Save", window="0xa"))
+    assert ("focuswindow", ("address:0xhuman",)) in focused
+    assert "gave it straight back to 0xhuman" in out and "focus untouched" not in out
+
+
+def test_focus_moved_elsewhere_is_reported_not_taken_back(wired_bg, monkeypatch):
+    # another window took it: that may be the human, so hypruse only says so
+    wired_bg["seat_after"] = ({"address": "0xother"}, {"id": 3})
+    focused = []
+    monkeypatch.setattr(srv.hyprctl, "dispatch", lambda name, *a: focused.append(name))
+    out = str(srv.click_ui(name="Save", window="0xa"))
+    assert "focuswindow" not in focused and "WARNING" in out
 
 
 def test_a_rehearsed_press_reads_plainly(wired_bg, monkeypatch):
@@ -1185,6 +1249,26 @@ def test_set_ui_moves_a_slider_and_reads_it_back(setter):
     assert setter["clicks"] == [] and setter["dispatch"] == []
 
 
+def test_set_ui_holds_the_focus_while_it_acts(setter):
+    srv.set_ui(name="Save", window="0xa", value=70)
+    assert setter["props"] == [("0xa", "focus_on_activate", "0")]
+
+
+def test_a_tick_that_lands_late_is_still_read_back(setter, monkeypatch):
+    # Chromium applies the press a beat after the action returns
+    setter["reading"] = {"checked": False}
+    reads = {"n": 0}
+
+    def late(bus, svc, path):
+        reads["n"] += 1
+        return {"checked": reads["n"] > 3}
+
+    monkeypatch.setattr(srv.a11y, "do_action", lambda *a, **k: True)
+    monkeypatch.setattr(srv.a11y, "current_value", late)
+    out = str(srv.set_ui(name="Save", window="0xa", checked=True))
+    assert "now: checked=true" in out and "still reads" not in out
+
+
 def test_set_ui_refuses_a_value_outside_the_range(setter):
     with pytest.raises(srv.trust.TrustError, match=r"outside the range of .* \(0 to 100\)"):
         srv.set_ui(name="Save", window="0xa", value=150)
@@ -1270,6 +1354,36 @@ def test_set_ui_selects_an_item_anywhere_in_the_window(setter):
     assert out.startswith("selected page tab 'Advanced'") and "now selected: 'Advanced'" in out
 
 
+def test_an_item_the_list_will_not_select_is_picked_by_its_own_action(setter, monkeypatch):
+    # Chromium refuses SelectChild on a <select>; each option offers 'select'
+    setter["candidates"] = [dict(_candidate("Dark"), role="menu item")]
+    setter["selected"] = ["Dark"]
+    setter["action_names"] = ["select", "showContextMenu"]
+    monkeypatch.setattr(srv.a11y, "select_child", lambda *a: False)
+    out = str(srv.set_ui(window="0xa", select="Dark"))
+    assert setter["run_actions"] == [0]
+    assert "its own accessibility action 'select'" in out and "now selected: 'Dark'" in out
+
+
+def test_a_web_tab_the_list_will_not_select_is_clicked(setter, monkeypatch):
+    # an ARIA tab list in Chromium: no SelectChild, and the tab offers 'click'
+    setter["candidates"] = [_candidate("Privacy")]
+    setter["selected"] = ["Privacy"]
+    setter["action_names"] = ["click", "showContextMenu"]
+    monkeypatch.setattr(srv.a11y, "select_child", lambda *a: False)
+    out = str(srv.set_ui(window="0xa", select="Privacy"))
+    assert setter["run_actions"] == [0] and "action 'click'" in out
+
+
+def test_an_item_with_no_way_to_select_it_is_refused(setter, monkeypatch):
+    setter["candidates"] = [_candidate("Dark")]
+    setter["action_names"] = []
+    monkeypatch.setattr(srv.a11y, "select_child", lambda *a: False)
+    with pytest.raises(srv.trust.TrustError, match="did not accept the selection"):
+        srv.set_ui(window="0xa", select="Dark")
+    assert setter["run_actions"] == []
+
+
 def test_set_ui_says_when_another_item_ended_up_selected(setter):
     setter["candidates"] = [_candidate("Advanced")]
     setter["selected"] = ["General"]
@@ -1337,3 +1451,70 @@ def test_a_dry_run_says_it_would_only_scroll(wired_bg, monkeypatch):
     monkeypatch.setattr(srv.journal, "dry_run", lambda: True)
     wired_bg["action_name"] = "listitem.scroll-to"
     assert "would scroll to" in str(srv.click_ui(name="Save", window="0xa"))
+
+
+# --- Chromium-based apps --------------------------------------------------------
+
+
+def test_launch_starts_a_chromium_app_with_its_tree(launch_fake, monkeypatch):
+    sent = []
+    real = srv._launch_and_wait
+    monkeypatch.setattr(srv, "_launch_and_wait", lambda cmd, wait_s, accept=None: (
+        sent.append(cmd) or real(cmd, wait_s, accept)))
+    monkeypatch.setattr(srv.chromium, "is_chromium_command", lambda argv0: argv0 == "code")
+    out = srv.launch("code")
+    assert sent == ["[workspace 99 silent] env ACCESSIBILITY_ENABLED=1 code "
+                    "--force-renderer-accessibility"]
+    assert "accessibility tree on" in out["note"]
+
+
+def test_launch_leaves_a_chromium_app_alone_when_told_to(launch_fake, monkeypatch):
+    sent = []
+    real = srv._launch_and_wait
+    monkeypatch.setattr(srv, "_launch_and_wait", lambda cmd, wait_s, accept=None: (
+        sent.append(cmd) or real(cmd, wait_s, accept)))
+    monkeypatch.setattr(srv.chromium, "is_chromium_command", lambda argv0: True)
+    monkeypatch.setenv("HYPRUSE_CHROMIUM_A11Y", "0")
+    out = srv.launch("code")
+    assert sent == ["[workspace 99 silent] code"] and "tree" not in out["note"]
+
+
+def test_background_keys_to_a_chromium_app_are_refused(wired_bg, monkeypatch):
+    # Chromium drops keys sent to a window without keyboard focus: the old
+    # result said they were sent while nothing arrived
+    monkeypatch.setattr(srv.chromium, "is_chromium_pid", lambda pid: pid == 42)
+    for call in (lambda: srv.keyboard("type", text="hi", window="0xa"),
+                 lambda: srv.keyboard("key", keys="Return", window="0xa")):
+        with pytest.raises(srv.trust.TrustError, match="Chromium-based"):
+            call()
+    assert wired_bg["shortcuts"] == [] and wired_bg["inserted"] == []
+
+
+def test_set_ui_text_in_a_chromium_app_says_why(setter):
+    setter["ifaces"] = {"Text"}
+    setter["toolkit"] = ("Chromium", "1.0")
+    with pytest.raises(srv.trust.TrustError, match="browser tool"):
+        srv.set_ui(name="Save", window="0xa", text="x")
+
+
+def test_ui_says_how_to_give_a_chromium_app_its_tree(monkeypatch):
+    monkeypatch.setattr(srv, "_resolve_window", lambda w="": dict(CLIENT))
+    monkeypatch.setattr(srv.a11y, "connect", lambda: object())
+    monkeypatch.setattr(srv.a11y, "app_for_pid", lambda *a: None)
+    assert "Chromium" not in srv._ui_read("0xa")
+    monkeypatch.setattr(srv.chromium, "is_chromium_pid", lambda pid: pid == 42)
+    out = srv._ui_read("0xa")
+    assert "--force-renderer-accessibility" in out and "start it again with launch" in out
+
+
+def test_a_label_repeating_its_control_is_one_candidate():
+    tab = {"role": "panel", "name": "Work Log", "x": 1010, "y": 142, "action": "click"}
+    echo = {"role": "static", "name": "Work Log", "x": 1009, "y": 142,
+            "action": "clickAncestor"}
+    elsewhere = {"role": "static", "name": "Work Log", "x": 237, "y": 357,
+                 "action": "clickAncestor"}  # the same name in the file list
+    other = {"role": "static", "name": "Notes", "x": 1009, "y": 142,
+             "action": "clickAncestor"}  # inside the tab, but not its name
+    boxes = [(950, 130, 120, 25), (980, 135, 60, 15), (200, 350, 80, 15), (980, 135, 60, 15)]
+    out = srv._without_label_echoes([tab, echo, elsewhere, other], boxes)
+    assert out == [tab, elsewhere, other]

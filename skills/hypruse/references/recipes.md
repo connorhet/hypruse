@@ -345,7 +345,9 @@ says `not found, call desktop() for current addresses` (exit 1), re-read.
 
 **"exposes no accessibility tree" (exit 4).** Terminals, canvas apps, games
 and Electron/Chrome started without `--force-renderer-accessibility` expose
-little or nothing. Fall back to `screenshot --window`, `zoom`, `pointer`
+little or nothing. For a Chromium-based app the message says so; `hypruse
+launch APP` starts it with its tree on (ask before restarting one the human
+opened). Fall back to `screenshot --window`, `zoom`, `pointer`
 (recipe 2). A tree that exists but prints `no actionable elements` may still
 hold what you need under `ui --all` or a `--name` filter. A huge tree says
 it stopped after reading 2000 elements, and `--name` reads the same ones,

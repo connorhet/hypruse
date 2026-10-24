@@ -35,6 +35,9 @@ src/hypruse/
   background.py  background mode: the policy (HYPRUSE_BACKGROUND, the
                  background= argument, the automatic rule) and the agent's
                  workspace range (HYPRUSE_AGENT_WORKSPACES / _FILL)
+  chromium.py    tells Chromium-based apps (Electron, CEF, browsers) by their
+                 files: launch starts one with its accessibility tree on, and
+                 background keys to one are refused (it drops them)
   keymap.py      libxkbcommon over ctypes: which key and modifiers type a
                  character on the active layout, for sendshortcut
   trust.py       opt-in confinement, auth interlock, seat-contention guard,
@@ -189,10 +192,24 @@ ask the human.
 - `click_ui` resolves the control as before, with its AT-SPI service and
   path kept (marks store them too, so a mark works in the background).
   `_click_in_background` runs the guards and the reads that can refuse
-  (the action check, GTK 3 with `misc:focus_on_activate`) before the dry-run
-  return, then calls the control's `DoAction`, or `GrabFocus` for a text
+  (the action check, GTK 3 with `misc:focus_on_activate` when the focus
+  hold below could not be set) before the dry-run return, then calls the control's `DoAction`, or `GrabFocus` for a text
   field (told by role number, since GTK 4 names it "text box"), and reads
   the control back through `current_value`.
+- Every background entry point (`click_ui`, `set_ui`, `keyboard`) runs
+  inside `_holding_focus`: it sets the target window's `focus_on_activate`
+  property to 0 (`hyprctl.set_window_prop`, the `setprop` dispatcher, or
+  `hl.dsp.window.set_prop` under Lua), because an app may answer the action
+  by asking to be activated (Chromium when a field takes focus, GTK 2 and 3
+  when a widget does) and a setup with the option on grants that. A window
+  on the agent's workspaces keeps the property, any other gets `unset`
+  back. `_seat_report` takes the target address: when the target is what
+  took the focus, it focuses the human's window again and says so.
+- Chromium holds an accessibility action for a hidden window until its page
+  next hears from the bus, so `a11y.do_action` follows an action in a
+  Chromium app with `ScrollTo(ANYWHERE)` 100 ms later, which delivers it
+  and moves nothing already in view. Its `<select>` refuses SelectChild, so
+  `set_ui select` falls back to the option's own `select` action.
 - A control with no action whose parent has the Selection interface (a
   GTK notebook tab) is not refused: `a11y.selection_of` gives its
   container and index, and `click_ui` selects it with `SelectChild`,

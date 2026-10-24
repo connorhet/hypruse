@@ -1,0 +1,50 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Bench app</title>
+<style>
+  body { font: 14px sans-serif; margin: 16px; }
+  [role=tab] { padding: 6px 12px; border: 1px solid #999; cursor: pointer; display: inline-block; }
+  [role=tab][aria-selected=true] { background: #ddd; }
+  section { margin: 12px 0; }
+</style></head>
+<body>
+  <div role="tablist" aria-label="Sections">
+    <div role="tab" id="t-General" aria-selected="true" tabindex="0">General</div>
+    <div role="tab" id="t-Privacy" aria-selected="false" tabindex="-1">Privacy</div>
+    <div role="tab" id="t-About" aria-selected="false" tabindex="-1">About</div>
+  </div>
+  <section>
+    <label><input type="checkbox" id="notifications"> Notifications</label><br>
+    <label><input type="checkbox" id="sync" checked> Sync</label>
+  </section>
+  <section>
+    <label>Theme <select id="theme"><option>Light</option><option>Dark</option>
+      <option>System</option></select></label>
+  </section>
+  <button id="save">Save</button>
+  <p id="status" role="status">Not saved</p>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const tab = () => document.querySelector('[role=tab][aria-selected=true]').textContent;
+  const read = () => ({ tab: tab(), notifications: $('notifications').checked,
+                        sync: $('sync').checked, theme: $('theme').value, saved: saved });
+  let saved = null;  // what Save last stored, as the app would persist it
+  const report = () => window.bench.save(read());
+  for (const t of document.querySelectorAll('[role=tab]')) {
+    t.addEventListener('click', () => {
+      for (const o of document.querySelectorAll('[role=tab]')) {
+        o.setAttribute('aria-selected', String(o === t));
+        o.tabIndex = o === t ? 0 : -1;
+      }
+      report();
+    });
+  }
+  for (const id of ['notifications', 'sync', 'theme']) $(id).addEventListener('change', report);
+  $('save').addEventListener('click', () => {
+    saved = { notifications: $('notifications').checked, sync: $('sync').checked,
+              theme: $('theme').value };
+    $('status').textContent = 'Saved';
+    report();
+  });
+  report();
+</script>
+</body></html>

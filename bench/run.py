@@ -60,6 +60,19 @@ def seat() -> tuple[Any, ...]:
             tuple(m["activeWorkspace"]["id"] for m in monitors))
 
 
+def electron() -> str:
+    """An Electron to run the app fixture with: `electron`, else the newest of
+    the versioned builds Arch installs (electron43, ...)."""
+    names = ["electron"] + sorted(
+        {p.name for d in os.environ.get("PATH", "").split(":") if os.path.isdir(d)
+         for p in Path(d).glob("electron[0-9]*")},
+        key=lambda n: int(n.removeprefix("electron")), reverse=True)
+    for name in names:
+        if shutil.which(name):
+            return name
+    raise RuntimeError("no Electron found for the app fixture (install electron)")
+
+
 class Env:
     """The desktop a run uses: its directory, the web fixture, the throwaway browser."""
 
@@ -102,6 +115,12 @@ class Env:
         args = [str(state)] + (["agree"] if agree else [])
         address = self._launch("/usr/bin/python3", str(HERE / "fixtures" / "form.py"), *args)
         time.sleep(0.5)
+        return address
+
+    def launch_app(self, state: Path) -> str:
+        # plain: hypruse's launch is what turns the app's accessibility tree on
+        address = self._launch(electron(), str(HERE / "fixtures" / "electron"), str(state))
+        time.sleep(1.0)
         return address
 
     def launch_files(self, folder: Path) -> str:

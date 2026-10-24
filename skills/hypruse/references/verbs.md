@@ -436,7 +436,12 @@ control with no accessibility action, a control in a window whose app has
 another window of the same title or size (the tree cannot tell them apart),
 focusing a field in GTK 4 (it does not allow it), and focusing a GTK 2 or 3
 field (or one whose toolkit cannot be read) while Hyprland's
-`focus_on_activate` is on for that window.
+`focus_on_activate` is on and the per-window hold could not be set. Each
+background action turns `focus_on_activate` off for its target window, and
+gives the human's focus straight back if the target takes it anyway (the
+result ends with a `WARNING` saying so). `keyboard --window` is refused for
+a Chromium-based app (Electron, CEF, a browser), which drops keys sent to a
+window without focus.
 A tab, which offers no action of its own, is selected through its tab list
 instead (`selected page tab 'About' through its container's accessibility
 selection ...; now selected: 'About'`).

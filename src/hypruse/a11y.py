@@ -16,9 +16,11 @@ the server does the correlation and mapping.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import shutil
 import subprocess
+import time
 from typing import Any
 
 from hypruse import dbuswire, journal
@@ -491,10 +493,15 @@ def element_value(bus: Bus, svc: str, path: str, role: int, states: set[int]) ->
         return {"selected": _STATE_SELECTED in states}
     if role in _CHOICE_ROLES:
         # a combo box's name is often its label, not its choice; GTK 3 says
-        # which item is chosen through Selection (GTK 4's dropdown does not)
+        # which item is chosen through Selection (GTK 4's dropdown does not),
+        # and Chromium through the popup list that is the box's one child
+        holder = (svc, path)
         if "Selection" not in _interfaces(bus, svc, path):
-            return {}
-        chosen = selected_names(bus, svc, path)
+            kids = _children(bus, svc, path)
+            if len(kids) != 1 or "Selection" not in _interfaces(bus, *kids[0]):
+                return {}
+            holder = kids[0]
+        chosen = selected_names(bus, *holder)
         return {"value": chosen[0]} if chosen else {}
     if role in _TEXT_ROLES:
         if "Text" not in _interfaces(bus, svc, path):
@@ -816,14 +823,28 @@ def editable_fields(
     return out, not walk.truncated
 
 
+_SCROLL_ANYWHERE = 4  # AtspiScrollType ANYWHERE: the least scrolling that shows it
+_CHROMIUM_FLUSH_S = 0.1
+
+
 def do_action(bus: Bus, svc: str, path: str, index: int = 0) -> bool:
     """Invoke an accessible's action (default index 0, usually the click),
     with no pointer, so it works even when the window is not visible."""
     journal.refuse_if_dry("do_action")
     try:
-        return bool(bus.call(svc, path, _ACTION, "DoAction", "i", str(index))[0])
+        done = bool(bus.call(svc, path, _ACTION, "DoAction", "i", str(index))[0])
     except (CallRefused, IndexError):
         return False
+    if done and toolkit(bus, svc)[0].lower() == "chromium":
+        # Chromium can hold an action for a window nobody sees until its page
+        # next hears from the bus (seen after a field there took focus: the
+        # press landed with the agent's NEXT call). A scroll into view, which
+        # does nothing to a control already in view, delivers it now; sent
+        # at once, it arrives ahead of the action and delivers nothing.
+        time.sleep(_CHROMIUM_FLUSH_S)
+        with contextlib.suppress(CallRefused, IndexError):
+            bus.call(svc, path, _COMPONENT, "ScrollTo", "u", str(_SCROLL_ANYWHERE))
+    return done
 
 
 def value_range(bus: Bus, svc: str, path: str) -> tuple[float, float, float] | None:

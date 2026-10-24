@@ -131,3 +131,17 @@ def no_browser_bridge(monkeypatch):
     from hypruse.browser import install
 
     monkeypatch.setattr(install, "registered", lambda home=None: False)
+
+
+@pytest.fixture(autouse=True)
+def no_live_chromium_check(monkeypatch):
+    """No app is Chromium-based, unless a test says otherwise.
+
+    Same rule: the answer comes from the developer's installed programs and
+    running processes (/proc/PID/exe), so without this a launch test would
+    rewrite `code` on one machine and not another.
+    """
+    from hypruse import chromium
+
+    monkeypatch.setattr(chromium, "is_chromium_pid", lambda pid: False)
+    monkeypatch.setattr(chromium, "is_chromium_command", lambda argv0: False)

@@ -245,6 +245,14 @@ def _lua_sendshortcut(arg: str) -> str:
     )
 
 
+def _lua_setprop(arg: str) -> str:
+    window, prop, value = arg.split(" ", 2)
+    return (
+        f"hl.dsp.window.set_prop({{ window = {lua_str(window)}, prop = {lua_str(prop)}, "
+        f"value = {lua_str(value)} }})"
+    )
+
+
 _LUA_DISPATCH = {
     "exec": _lua_exec,
     "movecursor": _lua_movecursor,
@@ -256,6 +264,7 @@ _LUA_DISPATCH = {
     "togglefloating": _lua_togglefloating,
     "tagwindow": _lua_tagwindow,
     "sendshortcut": _lua_sendshortcut,
+    "setprop": _lua_setprop,
 }
 
 
@@ -335,6 +344,13 @@ def send_shortcut(mods: str, key: str, address: str) -> None:
     keys cannot interleave. Refuse an XWayland target before calling this:
     between two XWayland windows Hyprland delivers to the focused one."""
     dispatch("sendshortcut", f"{mods}, {key}, address:{address}")
+
+
+def set_window_prop(address: str, prop: str, value: str) -> None:
+    """Set one window's property (as a window rule would) until `value`
+    'unset' hands it back to the rules and options. It outlives a config
+    reload, unlike a rule added at runtime."""
+    dispatch("setprop", f"address:{address} {prop} {value}")
 
 
 def active_layout() -> tuple[str, str, str]:

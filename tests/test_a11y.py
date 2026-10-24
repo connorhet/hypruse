@@ -119,6 +119,9 @@ class FakeBus:
         if method == "GrabFocus":
             node["grabbed"] = True
             return [True]
+        if method == "ScrollTo":
+            node["scrolled"] = int(sig[1])
+            return [True]
         if method == "SetTextContents":
             node["text"] = sig[1]
             return [node.get("accepts", True)]
@@ -471,6 +474,16 @@ def test_do_action():
     bus, root = _tree()
     assert a11y.do_action(bus, "app", "/save") is True
     assert bus.nodes[("app", "/save")]["done"] is True
+    assert "scrolled" not in bus.nodes[("app", "/save")]
+
+
+def test_a_chromium_action_is_delivered_at_once():
+    # Chromium holds an action for a hidden window until its page next hears
+    # from the bus; a scroll into view (ANYWHERE) delivers it
+    bus, root = _tree()
+    bus.toolkits["app"] = "Chromium"
+    assert a11y.do_action(bus, "app", "/save") is True
+    assert bus.nodes[("app", "/save")]["scrolled"] == 4
 
 
 def test_degenerate_and_wild_extents_are_rejected():
@@ -964,6 +977,14 @@ def test_a_combo_box_reports_its_chosen_item_through_selection():
     assert a11y.current_value(bus, *combo) == {}  # nothing chosen, nothing claimed
     bus.nodes[combo]["ifaces"] = ["Action"]  # GTK 4's dropdown: no Selection at all
     assert a11y.current_value(bus, *combo) == {}
+
+
+def test_a_chromium_combo_box_reports_its_choice_through_its_list():
+    # Chromium's <select> has no Selection; its popup list, the box's one child, does
+    bus, _, _, combo = _tabs_and_combo()
+    bus.nodes[combo]["ifaces"] = ["Action"]
+    bus.nodes[("a", "/menu")]["selected"] = [("a", "/item1")]
+    assert a11y.current_value(bus, *combo) == {"value": "Green"}
 
 
 def test_ui_lists_a_tab_with_whether_it_is_selected():

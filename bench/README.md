@@ -1,6 +1,6 @@
 # The hypruse benchmark
 
-Twelve everyday tasks, each handed to a separate Claude Code run that has nothing but
+Fifteen everyday tasks, each handed to a separate Claude Code run that has nothing but
 hypruse's tools, and judged by what the app itself holds afterwards. It answers "how often
 does a task actually get done", which unit tests and hand-built probes cannot.
 
@@ -22,6 +22,10 @@ money: every task is one `claude -p` run, capped by `--budget` dollars (default 
   may not take over the screen, so the benchmark can run while someone uses the computer.
 - **The form** is a GTK 3 window (`fixtures/form.py`) that writes its state to a file on every
   change.
+- **The app** is a small Electron settings window (`fixtures/electron`), run with the
+  `electron` on the PATH (else the newest `electronNN`). It is launched plainly through
+  hypruse's `launch`, which is what turns its accessibility tree on, and writes its state to
+  a file on every change.
 - **The web pages** (`fixtures/web.py`) are served on two local origins, so the payment form is
   a cross-origin frame, and report what was done in them to the server's event log.
 - **The browser** is a throwaway Chromium with its own profile and the hypruse-browser
@@ -39,6 +43,9 @@ money: every task is one `claude -p` run, capped by `--budget` dollars (default 
 | form_agree | tick a check box | the form's state |
 | form_title | replace a field's text | the form's state |
 | form_multi | three changes, one of them unticking | the form's state |
+| app_tab | switch tabs in an Electron app | the app's state |
+| app_theme | choose an option in a `<select>` | the app's state |
+| app_save | tick one box, untick another, press Save | what Save stored |
 | web_search | search a shop | the page's search event |
 | web_second_result | open the second of five results | which product page loaded |
 | web_frame_pay | fill and submit a cross-origin payment frame | the frame's pay event |

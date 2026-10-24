@@ -52,7 +52,7 @@ they are visible; screenshot when visibility matters.
 | set a slider, pick a tab or combo item, replace a field, tick a box | `hypruse set_ui NAME --window ADDR --value N` (or `--select ITEM`, `--text T`, `--checked true`) | no pointer, works in any window; `--select ITEM --window ADDR` needs no NAME |
 | read a form's state, list what is clickable | `hypruse ui --window ADDR [--name N]` | a few hundred exact tokens, no image |
 | see the clickable controls numbered | `hypruse marks --window ADDR`, then `hypruse click_ui --mark N` | numbered screenshot plus legend |
-| look at what the tree cannot name (terminal, canvas, Electron/Chrome without the a11y flag) | `hypruse screenshot --window ADDR`, then `hypruse zoom X Y` | coarse to fine |
+| look at what the tree cannot name (terminal, canvas, an Electron app started without its a11y switches) | `hypruse screenshot --window ADDR`, then `hypruse zoom X Y` | coarse to fine |
 | click, drag or scroll at a point | `hypruse pointer click X Y` | last resort, only after zoom |
 | type text, press an app shortcut | `hypruse keyboard type TEXT --window ADDR`, `hypruse keyboard key ctrl+s --window ADDR` | `--window` aims the keys, in the background on any window but the human's |
 | run a compositor keybind (super+...) | `hypruse binds`, then `hypruse use_bind SUPER+F` | synthetic keys never trigger compositor binds |
@@ -192,7 +192,11 @@ one compact `{"ok":true,"tool":...,"result":...}` line.
 
 `ui` answers "exposes no accessibility tree" (exit 4) for terminals, canvas
 apps and Electron/Chrome started without `--force-renderer-accessibility`.
-Fall back to screenshot, zoom, pointer. For web pages prefer a browser tool
+`launch` starts a Chromium-based app with its tree on, so an app the agent
+opens itself has one; for one the human started, `ui` says so, and only
+the human should agree to a restart. Otherwise fall back to screenshot,
+zoom, pointer. Electron apps take clicks, ticks and drop-down choices in the
+background but not typing (`keyboard` and `set_ui text` refuse there). For web pages prefer a browser tool
 if one is installed; hypruse is for the desktop around the browser.
 
 ## References

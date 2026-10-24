@@ -7,6 +7,22 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Electron and other Chromium-based apps show their controls.** `launch`
+  recognises one by its files (Chromium's binary sits beside `icudtl.dat`
+  and its `.pak` bundles; shell wrappers like `/usr/bin/code` are followed)
+  and starts it with `ACCESSIBILITY_ENABLED=1` and
+  `--force-renderer-accessibility`, the two things it needs to build its
+  tree; neither can be turned on later. VS Code went from no controls to its
+  menus, activity bar and editor tabs, all pressable in the background.
+  `HYPRUSE_CHROMIUM_A11Y=0` starts such apps as given. `ui` on one started
+  without them says so and how to fix it.
+- **`set_ui select` works in Chromium-based apps.** Chromium refuses
+  SelectChild on a `<select>` and on a web page's tab list, so the item is
+  picked by its own action instead (an option's `select`, a tab's click),
+  and `ui` reads a `<select>`'s chosen option through its popup list.
+- **The benchmark has an Electron app** (`bench/fixtures/electron`) and
+  three tasks on it (a tab, a drop-down, two boxes and Save), started
+  through hypruse's own `launch`.
 - **`set_ui`: change a control without the pointer.** Move a slider or spin
   button to a `value`, `select` an item in a tab list, combo box or list,
   replace a field's whole `text`, set a box to `checked` true or false, or
@@ -26,12 +42,46 @@ All notable changes to this project are documented here. The format follows
   result reports whether the human's focus moved.
 
 ### Changed
+- **Background actions hold the human's focus.** An app can answer an
+  accessibility action by asking to be activated (Chromium and Electron when
+  a field takes focus, GTK 2 and 3 when a widget does), and Omarchy, like
+  many setups, has Hyprland grant that (`focus_on_activate`), which switched
+  the human to the agent's window. Each background action now turns
+  `focus_on_activate` off for the target window first (a per-window
+  property, which outlives a config reload); a window on the agent's
+  workspaces keeps it, any other gets its own setting back. With the hold,
+  `click_ui` may focus a GTK 3 field in the background, which it refused.
+- **Focus the acted-on window takes is given back.** If the human's focus
+  moves to the target window during a background action anyway, hypruse
+  focuses their window again at once and says so; a move to any other
+  window may be the human's own and is only reported.
+- **Background keys to a Chromium-based app are refused.** Chromium drops
+  keys sent to a window without keyboard focus, so `keyboard(window=...)`
+  reported keys sent while nothing arrived; `set_ui text` on one says why
+  it cannot type and what works instead.
 - **`ui` and `marks` read more of a form back.** A tab says whether it is
   the `selected` one, and a combo box reports its chosen item as `value`
   (where the toolkit exposes it: GTK 3 does, GTK 4's dropdown does not).
   `set_ui checked=` ends with the box's reading, like the other changes.
 
 ### Fixed
+- **The GTK 3 field-focus check read every window as safe.** It asked
+  Hyprland for the window's own `focus_on_activate`, and `getprop` answers
+  false for a property nothing has set, so on a setup with the option on
+  the check passed and the field's window took the human's focus. It reads
+  the option now, and the hold above makes the question moot where it holds.
+- **A press in a hidden Chromium window lands at once.** Chromium held an
+  accessibility action for a window nobody sees until its page next heard
+  from the bus (after a field there took focus, a check box ticked with the
+  agent's next call, and the read-back said it had not); a scroll into view
+  100 ms after the action delivers it.
+- **Read-backs wait for the change.** A check box or selection is read for
+  up to half a second until it shows the change, instead of once after
+  50 ms, which reported Chromium's slower changes as not made.
+- **One web control, one candidate.** Chromium lists a clickable element's
+  text again as an element whose action is `clickAncestor`; `ui` drops that
+  echo when the control around it carries the same name, so `click_ui` on
+  an Obsidian tab no longer asks which of two.
 - **`click_ui` no longer calls a scroll a press.** A GTK 4 list or grid cell
   (Nautilus's files) offers only `listitem.scroll-to`; a background click
   now selects it through its container, as a real click would, and says it

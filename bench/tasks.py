@@ -18,7 +18,7 @@ Ctx = dict[str, Any]
 @dataclass(frozen=True)
 class Task:
     id: str
-    kind: str  # "form", "web" or "files": which fixture it needs
+    kind: str  # "form", "app", "web" or "files": which fixture it needs
     prompt: str  # formatted with the context setup returns
     setup: Callable[[Any, Ctx], None]
     check: Callable[[Any, Ctx, str], tuple[bool, str]]
@@ -43,6 +43,14 @@ def form_check(**want: Any) -> Callable[[Any, Ctx, str], tuple[bool, str]]:
         wrong = {k: state.get(k) for k, v in want.items() if state.get(k) != v}
         return not wrong, "ok" if not wrong else f"form holds {wrong}, wanted {want}"
     return check
+
+
+# --- the Electron app -------------------------------------------------------------
+
+
+def app_setup(env, ctx):
+    ctx["state"] = env.run_dir / f"app-{ctx['task']}.json"
+    ctx["window"] = env.launch_app(ctx["state"])
 
 
 # --- the web pages ----------------------------------------------------------------
@@ -129,6 +137,7 @@ def files_teardown(env, ctx):
 
 
 FORM = "In the window titled 'Bench form', "
+APP = "In the window titled 'Bench app', "
 TASKS = [
     Task("form_volume", "form", FORM + "set the Volume slider to 60.",
          form_setup(), form_check(volume=60.0)),
@@ -143,6 +152,12 @@ TASKS = [
     Task("form_multi", "form",
          FORM + "set Count to 12, choose Green as the colour, and make sure Agree is unticked.",
          form_setup(agree=True), form_check(count=12, colour="Green", agree=False)),
+    Task("app_tab", "app", APP + "switch to the Privacy tab.", app_setup,
+         form_check(tab="Privacy")),
+    Task("app_theme", "app", APP + "set the Theme to Dark.", app_setup,
+         form_check(theme="Dark")),
+    Task("app_save", "app", APP + "turn Notifications on, turn Sync off, and save.",
+         app_setup, form_check(saved={"notifications": True, "sync": False, "theme": "Light"})),
     Task("web_search", "web", "In my browser, the 'Bench shop' tab is open. Search the shop "
          "for lamp.", web_setup("/"), search_check),
     Task("web_second_result", "web", "In my browser, the 'Bench shop results' tab shows search "

@@ -19,11 +19,22 @@ import shutil
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, NoReturn
 
-from hypruse import __version__, a11y, events, hyprctl, journal, keymap, safety, session, trust
+from hypruse import (
+    __version__,
+    a11y,
+    chromium,
+    events,
+    hyprctl,
+    journal,
+    keymap,
+    safety,
+    session,
+    trust,
+)
 from hypruse import background as bg
 from hypruse import clipboard as clip
 from hypruse import input as hinput
@@ -43,7 +54,7 @@ clicks it in ONE call, no image and no pixel estimation (`ui` lists the
 controls and their current values without clicking; `marks` returns a
 numbered screenshot plus legend when you want to SEE what is clickable,
 then `click_ui(mark=N)`). Use screenshot + zoom when the tree exposes
-nothing (terminals, canvas UIs, Electron/Chrome without a flag). To
+nothing (terminals, canvas UIs, Electron apps not started by `launch`). To
 verify an effect without a second round-trip, pass `then='desktop'` (a
 fresh snapshot), `then='ui'` (controls with current values, cheapest
 after typing or toggling: the focused window, or for `click_ui` the
@@ -158,7 +169,7 @@ exposes one; `marks` adds a numbered screenshot plus legend when you want
 to SEE the controls. Use
 `screenshot` (focused monitor, a window, or a region) and `zoom` (a
 native-resolution crop around a point) when the tree exposes nothing
-(terminals, canvas UIs, Electron/Chrome without a flag). `binds`
+(terminals, canvas UIs, Electron apps started without a11y). `binds`
 lists the owner's own keybinds, useful for understanding their
 workflows. To notice a change (an app starting, a title updating, a
 layer appearing), block on `wait_for` instead of re-capturing in a
@@ -453,6 +464,37 @@ _UNSURE = ("its accessibility tree cannot tell which window is {addr} (another w
            "{cls} could match it, or its accessibility connection is another process's)")
 
 
+def _without_label_echoes(
+    items: list[dict[str, Any]], boxes: list[tuple[int, int, int, int]]
+) -> list[dict[str, Any]]:
+    """Drop a label that only repeats the control around it. Chromium lists a
+    clickable element's text as a second element whose action is
+    clickAncestor (press whatever contains me), so one tab in a web app read
+    as two candidates for its name and click_ui had to ask which."""
+    def inside(i: int, j: int) -> bool:
+        x, y = items[i]["x"], items[i]["y"]
+        bx, by, bw, bh = boxes[j]
+        return bx <= x < bx + bw and by <= y < by + bh
+
+    return [it for i, it in enumerate(items) if not (
+        it.get("action") == "clickAncestor" and any(
+            j != i and other.get("name") == it.get("name")
+            and other.get("action") != "clickAncestor" and inside(i, j)
+            for j, other in enumerate(items)))]
+
+
+def _no_tree_hint(client: dict[str, Any]) -> str:
+    """Why a Chromium-based window shows no controls, and the way to fix it;
+    "" for any other app."""
+    if not chromium.is_chromium_pid(client.get("pid")):
+        return ""
+    return ("; it is a Chromium-based app (Electron, CEF or a browser) that was started "
+            "without its accessibility tree, which it builds only when started with "
+            f"{chromium.A11Y_ENV} and {chromium.A11Y_SWITCH} (launch adds both): if the human "
+            "agrees, close it and start it again with launch; a web page in Chrome reads "
+            "through the browser tool")
+
+
 def _ui_read(
     window: str = "", name: str = "", actionable: bool = True, handles: bool = False
 ) -> list[Any] | str:
@@ -466,7 +508,8 @@ def _ui_read(
         bus = a11y.connect()
         app = a11y.app_for_pid(bus, client.get("pid"), title, tuple(client["size"]))
         if app is None:
-            return f"{cls} exposes no accessibility tree; use screenshot + zoom instead"
+            return (f"{cls} exposes no accessibility tree{_no_tree_hint(client)}; use "
+                    "screenshot + zoom instead")
         frame = a11y.window_frame(bus, app[0], app[1], title, tuple(client["size"]))
         # a background press acts on the control itself, and a reading after
         # one must be of this window, not a same-titled one: prove the frame
@@ -480,6 +523,7 @@ def _ui_read(
     ax, ay = client["at"]
     aw, ah = client["size"]
     out = []
+    boxes: list[tuple[int, int, int, int]] = []
     for e in elements:
         ex, ey, ew, eh = e["extent"]
         x, y = ax + ex + ew // 2, ay + ey + eh // 2
@@ -504,12 +548,14 @@ def _ui_read(
         elif handles:  # another window of the app could own this control
             item["_unsure"] = True
         out.append(item)
+        boxes.append((ax + ex, ay + ey, ew, eh))
+    out = _without_label_echoes(out, boxes)
     # a name filter reads the same elements, so it is no way past the cut
     cut = (f"it stopped after reading {a11y.WALK_BUDGET} elements of a large tree, so "
            f"{'a match' if name else 'more controls'} may lie beyond them")
     if not out:
         what = f"matching {name!r}" if name else "actionable"
-        tail = f" ({cut})" if truncated else ""
+        tail = f" ({cut})" if truncated else "" if name else _no_tree_hint(client)
         return f"no {what} elements in {cls}{tail}"
     if exact is None and not handles:
         out.append({"note": "these controls may be another window's: "
@@ -542,7 +588,9 @@ def ui(window: str = "", name: str = "", actionable: bool = True) -> list[Any] |
     expose no value at all, so read the screen with screenshot when a
     rendered value matters. Not every app exposes a tree (terminals, and
     Electron/Chrome without --force-renderer-accessibility, expose little
-    or nothing); when it does not, fall back to screenshot + zoom."""
+    or nothing; `launch` starts a Chromium-based app with its tree on, and
+    the reply says when an app needs that); when it does not, fall back to
+    screenshot + zoom."""
     safety.touch("ui")
     view = _with_hidden_note(window, _ui_read(window, name, actionable))
     trust.remember_seat()  # a fresh read re-arms the strict seat guard
@@ -995,7 +1043,9 @@ def keyboard(
     if window:
         target_client = _resolve_window(window)
         if bg.decide(target_client["address"] == _active_address(), background):
-            return _keyboard_in_background(target_client, action, text, keys, then, allow_auth)
+            with _holding_focus(target_client):
+                return _keyboard_in_background(target_client, action, text, keys, then,
+                                               allow_auth)
     elif bg.decide(True, background):
         bg.refuse("keyboard needs window= on one of the agent's workspaces to type there")
     # a locked session eats all input, and a mapped launcher layer holds
@@ -1155,7 +1205,8 @@ def click_ui(
             # the accessibility action is the control's primary one
             kind = "double click" if double else f"{button} click"
             bg.refuse(f"a {kind} has no accessibility action, only a left click does")
-        return _click_in_background(client, control, desc, then, allow_auth)
+        with _holding_focus(client) as held:
+            return _click_in_background(client, control, desc, then, allow_auth, held)
     trust.guard_client(client)  # confinement
     trust.guard_auth_client(client, allow_auth)
     # a locked session, or a layer over the point, would swallow the click
@@ -1203,6 +1254,12 @@ def click_ui(
 _HYPR_MODS = {"ctrl": "CTRL", "shift": "SHIFT", "alt": "ALT", "logo": "SUPER", "altgr": "MOD5"}
 
 
+_CHROMIUM_TEXT = (
+    "for a web page in Chrome, type with the browser tool; in an app, its buttons, check "
+    "boxes and lists still work with click_ui and set_ui, but typing needs keyboard with "
+    "background=false on the human's screen, so ask the human first")
+
+
 def _keyboard_in_background(
     client: dict[str, Any], action: str, text: str, keys: str, then: str, allow_auth: bool
 ) -> list[Any] | str:
@@ -1213,6 +1270,11 @@ def _keyboard_in_background(
     trust.guard_auth_client(client, allow_auth)
     trust.guard_session_lock(True, allow_auth)
     addr, cls = client["address"], client.get("class", "")
+    if chromium.is_chromium_pid(client.get("pid")):
+        bg.refuse(f"{cls} is a Chromium-based app (Electron, CEF or a browser), and those "
+                  "ignore keys sent to a window without keyboard focus: nothing would arrive",
+                  "for a web page in Chrome, type with the browser tool; the app's buttons, "
+                  "check boxes and lists still work with click_ui and set_ui")
     layout = hyprctl.active_layout()
     kmap = keymap.for_layout(*layout)
     if action == "type":
@@ -1256,7 +1318,7 @@ def _keyboard_in_background(
             if a11y.insert_text(bus, field[0], field[1], text):
                 seen = ("not read back" if secret
                         else _read_back(before, a11y.text_of(bus, field[0], field[1]), text))
-                untouched, warning = _seat_report(seat)
+                untouched, warning = _seat_report(seat, addr)
                 paren = " (the human's focus untouched)" if untouched else ""
                 kind = "password field" if secret else "text field"
                 return _acted(
@@ -1320,7 +1382,7 @@ def _keyboard_in_background(
             raise hyprctl.HyprctlError(
                 f"sent {sent} of {len(chords)} keys to {addr}, then Hyprland refused a key "
                 "(the window may have closed)") from None
-    untouched, warning = _seat_report(seat)
+    untouched, warning = _seat_report(seat, addr)
     paren = " (the human's focus untouched)" if untouched else ""
     # keys land on whatever control the app has focused, which in a hidden
     # window is not the field text went into through accessibility
@@ -1346,7 +1408,8 @@ _TEXT_ROLE_NAMES = frozenset(
 
 
 def _click_in_background(
-    client: dict[str, Any], control: dict[str, Any], desc: str, then: str, allow_auth: bool
+    client: dict[str, Any], control: dict[str, Any], desc: str, then: str, allow_auth: bool,
+    held: bool = False,
 ) -> list[Any] | str:
     """click_ui with no pointer and no focus change: the control's own
     accessibility action (GrabFocus for a text field), read back after."""
@@ -1392,13 +1455,15 @@ def _click_in_background(
             bg.refuse("GTK 4 does not let a field take focus over the accessibility interface",
                       instead)
         presents = kit == "gail" or (kit == "gtk" and version[:2] in ("2.", "3.")) or not kit
-        if presents and _focus_on_activate(client["address"]) != 0:
+        if presents and not held and _focus_on_activate() != 0:
             # GTK 2 and 3 present their window when a widget takes focus over
-            # AT-SPI; a toolkit that cannot be read is treated the same
+            # AT-SPI; a toolkit that cannot be read is treated the same. The
+            # hold blocks that; without it only the option can be trusted,
+            # since getprop reads an unset window property as false
             bg.refuse(
                 f"{cls} brings its window forward when a field takes focus (GTK 2 or 3, or a "
-                "toolkit that cannot be read), and Hyprland's focus_on_activate is on for it "
-                "(or cannot be read), so focusing this field would switch the human to it",
+                "toolkit that cannot be read), and Hyprland's focus_on_activate is on (or "
+                "cannot be read), so focusing this field would switch the human to it",
                 instead,
             )
     if journal.dry_run():
@@ -1418,7 +1483,7 @@ def _click_in_background(
         bg.refuse("the app did not accept the accessibility action")
     time.sleep(0.05)  # let the app apply it before reading back
     if pick is not None:
-        untouched, warning = _seat_report(seat)
+        untouched, warning = _seat_report(seat, client["address"])
         paren = "no pointer, the human's focus untouched" if untouched else "no pointer"
         now = a11y.selected_names(bus, *pick[0])
         seen = f"; now selected: {', '.join(map(repr, now))}" if now else ""
@@ -1426,7 +1491,7 @@ def _click_in_background(
                       then, window=client["address"], fallback=False)
     verb = ("focused" if is_text or focus_only else "scrolled to" if scroll_only
             else "pressed")
-    untouched, warning = _seat_report(seat)
+    untouched, warning = _seat_report(seat, client["address"])
     paren = "no pointer, the human's focus untouched" if untouched else "no pointer"
     msg = f"{verb} {desc} through {how} ({paren}) in {cls}"
     if not any(c.get("address") == client["address"] for c in hyprctl.query("clients")):
@@ -1536,11 +1601,12 @@ def set_ui(
               "checked": _set_checked, "action": _set_action}[kind]
     arg = {"value": value, "select": select, "text": text, "checked": checked,
            "action": action}[kind]
-    return setter(bus, client, svc, path, desc, arg, then, allow_auth)
+    with _holding_focus(client):
+        return setter(bus, client, svc, path, desc, arg, then, allow_auth)
 
 
 def _set_done(client: dict[str, Any], msg: str, seat: Any, then: str) -> list[Any] | str:
-    untouched, warning = _seat_report(seat)
+    untouched, warning = _seat_report(seat, client["address"])
     paren = " (no pointer, the human's focus untouched)" if untouched else " (no pointer)"
     head, _, tail = msg.partition(";")
     out = f"{head}{paren} in {client.get('class', '')}" + (f";{tail}" if tail else "")
@@ -1593,20 +1659,32 @@ def _set_select(bus, client, svc, path, desc, item, then, allow_auth):
         return _acted(f"{_DRY} select {what} in {where} through its container's "
                       "accessibility selection", then, window=client["address"])
     seat = _seat_now()
+    how = "its container's accessibility selection"
     if not a11y.select_child(bus, *c["container"], c["index"]):
-        _set_refuse("the app did not accept the selection")
-    time.sleep(0.05)
-    now = a11y.selected_names(bus, *c["container"])
+        # Chromium refuses SelectChild on a <select>'s list and on a web
+        # page's tab list; the item is picked by its own action then, the
+        # 'select' an option offers or the click a tab does
+        names = a11y.actions(bus, *c["item"])
+        own = [i for i, n in enumerate(names) if n.lower() == "select"] or (
+            [0] if names else [])
+        if not own or not a11y.do_action(bus, *c["item"], own[0]):
+            _set_refuse("the app did not accept the selection")
+        how = f"its own accessibility action {names[own[0]]!r}"
+    now = _read_until(lambda: a11y.selected_names(bus, *c["container"]),
+                      lambda names: c["name"] in names)
     seen = f"; now selected: {', '.join(map(repr, now))}" if now else ""
     if now and c["name"] not in now:
         seen += " (not the item asked for)"
-    return _set_done(client, f"selected {what} through its container's accessibility "
-                     f"selection{seen}", seat, then)
+    return _set_done(client, f"selected {what} through {how}{seen}", seat, then)
 
 
 def _set_text(bus, client, svc, path, desc, text, then, allow_auth):
     role = a11y._role_num(bus, svc, path)
     if "EditableText" not in a11y._interfaces(bus, svc, path):
+        if a11y.toolkit(bus, svc)[0].lower() == "chromium":
+            _set_refuse(f"{desc} is in a Chromium-based app, which does not take text over the "
+                        "accessibility interface and ignores keys sent to a window without "
+                        "keyboard focus", _CHROMIUM_TEXT)
         _set_refuse(f"{desc} is not an editable text field", "use keyboard to type into it")
     secret = role == a11y.PASSWORD_ROLE
     if secret and not allow_auth:
@@ -1630,6 +1708,22 @@ def _set_text(bus, client, svc, path, desc, text, then, allow_auth):
                      f"text; {seen}", seat, then)
 
 
+_READ_TRIES = 10  # of 50 ms: Chromium applies a press in its renderer, a beat later
+
+
+def _read_until(read: Callable[[], Any], done: Callable[[Any], bool]) -> Any:
+    """Read a control back until it shows the change or half a second has
+    passed, then return the last reading: one read straight after the action
+    reports a change still on its way as one that did not happen."""
+    value = None
+    for _ in range(_READ_TRIES):
+        time.sleep(0.05)
+        value = read()
+        if done(value):
+            break
+    return value
+
+
 def _set_checked(bus, client, svc, path, desc, checked, then, allow_auth):
     state = a11y.current_value(bus, svc, path).get("checked")
     if state is None:
@@ -1646,8 +1740,8 @@ def _set_checked(bus, client, svc, path, desc, checked, then, allow_auth):
     seat = _seat_now()
     if not a11y.do_action(bus, svc, path):
         _set_refuse("the app did not accept the accessibility action")
-    time.sleep(0.05)
-    now = a11y.current_value(bus, svc, path).get("checked")
+    now = _read_until(lambda: a11y.current_value(bus, svc, path).get("checked"),
+                      lambda v: v == checked)
     seen = (f"; now: checked={str(now).lower()}" if now == checked
             else f"; it still reads checked={str(now).lower()}")
     return _set_done(client, f"pressed {desc} so it is {want} through its accessibility "
@@ -1687,11 +1781,15 @@ def _seat_now() -> tuple[Any, Any] | None:
 _SEAT_SETTLE = 0.2
 
 
-def _seat_report(before: tuple[Any, Any] | None) -> tuple[bool, str]:
+def _seat_report(
+    before: tuple[Any, Any] | None, target: str = ""
+) -> tuple[bool, str]:
     """(untouched, warning) for a background result: it may say the human's
     focus was untouched only when the seat read the same before and after,
     and says what changed when it did not (an app can open or activate a
-    window of its own in response)."""
+    window of its own in response). When the window acted on is what took
+    the focus, the action caused it, so the focus goes straight back; any
+    other change may be the human's own and is only reported."""
     if before is None:
         return False, ""
     time.sleep(_SEAT_SETTLE)  # an app opens or activates a window a beat later
@@ -1700,21 +1798,46 @@ def _seat_report(before: tuple[Any, Any] | None) -> tuple[bool, str]:
         return False, ""
     if after == before:
         return True, ""
+    if target and after[0] == target and before[0]:
+        with contextlib.suppress(Exception):
+            hyprctl.dispatch("focuswindow", f"address:{before[0]}")
+            time.sleep(0.05)
+            if _seat_now() == before:
+                return False, (f"; WARNING: {target} took the human's focus during this "
+                               f"action, and hypruse gave it straight back to {before[0]}")
     return False, (f"; WARNING: the human's focused window changed during this action (now "
                    f"{after[0]} on workspace {after[1]}), so it may have opened or activated "
                    "a window")
 
 
-def _focus_on_activate(address: str = "") -> int | None:
-    """Hyprland's focus_on_activate for a window (a window rule overrides the
-    misc: option, and getprop reports the result), else the option; None
-    when neither can be read."""
-    if address:
+@contextlib.contextmanager
+def _holding_focus(client: dict[str, Any]) -> Iterator[bool]:
+    """Stop the window from taking the human's focus while a background
+    action runs: an app answers some accessibility actions by asking to be
+    activated (Chromium and Electron when a field takes focus, GTK 2 and 3
+    when a widget does), and Omarchy, like many setups, has Hyprland grant
+    that (focus_on_activate). Yields whether the hold is in place. A window
+    on one of the agent's workspaces keeps it, since an app may ask a beat
+    after the result; any other window is the human's and gets its own
+    setting back."""
+    addr = client["address"]
+    held = False
+    if not journal.dry_run():
         with contextlib.suppress(Exception):
-            reply = hyprctl.query(f"getprop address:{address} focus_on_activate")
-            value = reply.get("focus_on_activate") if isinstance(reply, dict) else None
-            if isinstance(value, int | bool):
-                return int(value)
+            hyprctl.set_window_prop(addr, "focus_on_activate", "0")
+            held = True
+    try:
+        yield held
+    finally:
+        if held and not bg.on_agent_workspace(client):
+            with contextlib.suppress(Exception):
+                hyprctl.set_window_prop(addr, "focus_on_activate", "unset")
+
+
+def _focus_on_activate() -> int | None:
+    """Hyprland's misc:focus_on_activate; None when it cannot be read. Not a
+    window's own: getprop answers false for a property nothing has set, the
+    same as one a rule turned off, so it cannot show that a window is safe."""
     try:
         reply = hyprctl.query("getoption misc:focus_on_activate")
     except Exception:
@@ -2060,6 +2183,17 @@ def launch(
                 + ("" if mode == bg.GUARANTEE
                    else "; pass background=false to open it on the human's workspace")
             )
+    # a Chromium-based app (Electron, CEF, a browser) shows its controls only
+    # when started for it; HYPRUSE_CHROMIUM_A11Y=0 starts it as given
+    tree_on = None
+    if os.environ.get("HYPRUSE_CHROMIUM_A11Y", "1") != "0":
+        tree_on = chromium.with_accessibility(command)
+    if tree_on:
+        command = tree_on
+        note = (f"{note}; " if note else "") + (
+            "started with its accessibility tree on (a Chromium-based app shows its controls "
+            f"to ui and click_ui only when started with {chromium.A11Y_ENV} and "
+            f"{chromium.A11Y_SWITCH})")
     rule = f"[workspace {_workspace(workspace)} silent] " if workspace else ""
     if journal.dry_run():
         return f"{_DRY} run {rule + command} and wait up to {wait_s:.0f}s for its window"
