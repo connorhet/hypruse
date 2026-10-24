@@ -27,10 +27,14 @@ metadata:
 
 **If the hypruse MCP tools are available (`mcp__hypruse__desktop`,
 `mcp__hypruse__click_ui`, ...), call those, not the CLI.** Each verb below is
-the tool of the same name with the same arguments (`--window ADDR` is
-`window="ADDR"`, `--then ui` is `then="ui"`), the results read the same, and
-everything in this skill applies to both. A refusal comes back as a tool
-error instead of exit code 3. The `browser` tool exists only over MCP.
+the tool of the same name, the results read the same, and everything in this
+skill applies to both. Take argument names from the tool's schema, not from
+the CLI flags: most match (`--window ADDR` is `window="ADDR"`, `--then ui` is
+`then="ui"`), but `hypr`'s window is `target`, `launch` waits with `wait_s`,
+`wait_for` with `timeout_s`, and `screenshot`, `zoom` and `marks` take no
+output path (the result names the file). An argument a tool does not have is
+refused with the names it does have. A refusal comes back as a tool error
+instead of exit code 3. The `browser` tool exists only over MCP.
 
 Every verb is `hypruse <verb> [args]`. `hypruse --help` lists every verb and
 `hypruse <verb> [<action>] --help` is the ground truth for its flags; read it

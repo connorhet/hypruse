@@ -65,6 +65,15 @@ All notable changes to this project are documented here. The format follows
   `set_ui checked=` ends with the box's reading, like the other changes.
 
 ### Fixed
+- **A misnamed tool argument is refused, not dropped.** FastMCP ignored an
+  argument a tool does not have, so an agent's `hypr(window=...)` arrived
+  with no address ("'' is not a window address") and `launch(wait=30)`
+  waited the default 8 s. Every tool's schema now forbids unknown
+  arguments, and a call with one is refused before anything runs, naming
+  the argument meant (`target`, `wait_s`, `timeout_s`) and listing the
+  tool's own. `launch` takes its command as an argv list too, and `launch`
+  and `hypr` a workspace as a number. The skill no longer claims the tools'
+  argument names are the CLI's flags.
 - **The GTK 3 field-focus check read every window as safe.** It asked
   Hyprland for the window's own `focus_on_activate`, and `getprop` answers
   false for a property nothing has set, so on a setup with the option on

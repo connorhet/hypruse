@@ -1518,3 +1518,45 @@ def test_a_label_repeating_its_control_is_one_candidate():
     boxes = [(950, 130, 120, 25), (980, 135, 60, 15), (200, 350, 80, 15), (980, 135, 60, 15)]
     out = srv._without_label_echoes([tab, echo, elsewhere, other], boxes)
     assert out == [tab, elsewhere, other]
+
+
+# --- tool arguments ---------------------------------------------------------------
+
+
+def test_an_unknown_argument_is_refused_with_the_right_name():
+    import asyncio
+
+    from mcp.server.fastmcp.exceptions import ToolError
+
+    app = srv.build_app()
+    hypr = next(t for t in asyncio.run(app.list_tools()) if t.name == "hypr")
+    assert hypr.inputSchema["additionalProperties"] is False
+    with pytest.raises(ToolError) as err:  # refused before the tool runs
+        asyncio.run(app.call_tool("hypr", {"action": "move_window", "window": "0xa",
+                                           "workspace": "95"}))
+    assert "`window` (did you mean `target`?)" in str(err.value)
+    assert "nothing was done" in str(err.value)
+
+
+@pytest.mark.parametrize(("tool", "arg", "hint"), [
+    ("launch", "wait", "did you mean `wait_s`?"),
+    ("wait_for", "timeout", "did you mean `timeout_s`?"),
+    ("hypr", "addr", "did you mean `target`?"),
+    ("hypr", "ws", "did you mean `workspace`?"),
+    ("screenshot", "out", "chooses the file"),
+])
+def test_unknown_arguments_name_what_was_meant(tool, arg, hint):
+    known = {"launch": ["command", "workspace", "wait_s", "background"],
+             "wait_for": ["event", "match", "timeout_s"],
+             "hypr": ["action", "target", "workspace", "then"],
+             "screenshot": ["window", "region", "scale", "stable", "lossless"]}[tool]
+    assert hint in srv.unknown_argument_error(tool, [arg], known)
+
+
+def test_launch_takes_an_argv_list_and_a_numbered_workspace(launch_fake, monkeypatch):
+    sent = []
+    real = srv._launch_and_wait
+    monkeypatch.setattr(srv, "_launch_and_wait", lambda cmd, wait_s, accept=None: (
+        sent.append(cmd) or real(cmd, wait_s, accept)))
+    srv.launch(["bash", "-lc", "cd /tmp && run.sh > log 2>&1"], workspace=95)
+    assert sent == ["[workspace 95 silent] bash -lc 'cd /tmp && run.sh > log 2>&1'"]

@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import difflib
 import json
 import mimetypes
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1934,7 +1936,9 @@ _HYPR_TAKES_VIEW = {
 
 
 @journal.journaled("act")
-def hypr(action: str, target: str = "", workspace: str = "", then: str = "none") -> list[Any] | str:
+def hypr(
+    action: str, target: str = "", workspace: str | int = "", then: str = "none"
+) -> list[Any] | str:
     """Window/workspace ops over IPC (instant, no vision).
     action='workspace' (workspace: number/name/'special:name') |
     'focus_window' (target: address) | 'move_window' (target + workspace,
@@ -1945,7 +1949,7 @@ def hypr(action: str, target: str = "", workspace: str = "", then: str = "none")
     refused because they change the human's view, and move_window moves
     only to the agent's own workspaces."""
     safety.touch(f"hypr:{action}")
-    workspace = workspace.strip()
+    workspace = str(workspace).strip()
     # every argument is checked before any guard runs and before anything
     # is dispatched, so a bad call cannot half-run and a dry run raises
     # exactly what the real call would
@@ -2125,7 +2129,8 @@ def _launch_and_wait(
 
 @journal.journaled("act")
 def launch(
-    command: str, workspace: str = "", wait_s: float = 8.0, background: bool | None = None
+    command: str | list[str], workspace: str | int = "", wait_s: float = 8.0,
+    background: bool | None = None,
 ) -> dict[str, Any] | str:
     """Open an app: run `command` via Hyprland exec. Optional `workspace` placement
     (silent, works even for single-instance apps like browsers, whose
@@ -2141,6 +2146,9 @@ def launch(
     Returns the new window's address/class/title/workspace, or a timeout
     note."""
     safety.touch("launch")
+    if not isinstance(command, str):  # an argv list, as agents often send one
+        command = shlex.join(command)
+    workspace = str(workspace)
     wait_s = min(max(wait_s, 1.0), 30.0)
     # Background mode: with no workspace, automatic mode and the guarantee
     # open the app on the next agent workspace that is off screen
@@ -3319,7 +3327,61 @@ def build_app() -> Any:
             app_.tool(annotations=ToolAnnotations(
                 title=_TITLES[name], readOnlyHint=False, destructiveHint=True
             ))(acting_tool)
+    _refuse_unknown_arguments(app_)
     return app_
+
+
+# Argument names agents reach for, from the CLI's flags or from other tools,
+# and the name the tool has for it
+_ARG_ALIASES: dict[str, str] = {
+    "window": "target", "address": "target", "addr": "target", "wait": "wait_s",
+    "timeout": "timeout_s", "ws": "workspace", "cmd": "command",
+}
+_NO_OUTPUT_PATH = ("out", "path", "output", "file")
+
+
+def unknown_argument_error(tool: str, given: list[str], known: list[str]) -> str:
+    """The refusal for arguments a tool does not have, naming the ones it
+    does: an unknown name used to be dropped without a word, so a misnamed
+    window address arrived as no address at all ("'' is not a window
+    address") and a misnamed wait as the default."""
+    parts = []
+    for arg in given:
+        guess = _ARG_ALIASES.get(arg)
+        if guess not in known:
+            close = difflib.get_close_matches(arg, known, n=1)
+            guess = close[0] if close else None
+        if guess:
+            parts.append(f"`{arg}` (did you mean `{guess}`?)")
+        elif arg in _NO_OUTPUT_PATH and tool in ("screenshot", "zoom", "marks"):
+            parts.append(f"`{arg}` ({tool} chooses the file and its result names it)")
+        else:
+            parts.append(f"`{arg}`")
+    return (f"{tool} has no argument {', '.join(parts)}; nothing was done. Its arguments "
+            f"are: {', '.join(known) or 'none'}")
+
+
+def _refuse_unknown_arguments(app_: Any) -> None:
+    """Make every tool refuse an argument it does not have, in its schema
+    (additionalProperties false, so a client can check before sending) and
+    when called, since FastMCP otherwise drops it silently."""
+    from mcp.server.fastmcp.exceptions import ToolError
+
+    manager = app_._tool_manager
+    for tool in manager.list_tools():
+        tool.parameters["additionalProperties"] = False
+    call = manager.call_tool
+
+    async def strict_call(name: str, arguments: dict[str, Any], *args: Any, **kwargs: Any) -> Any:
+        tool = manager.get_tool(name)
+        if tool is not None:
+            known = list(tool.parameters.get("properties", {}))
+            extra = [k for k in arguments or {} if k not in known]
+            if extra:
+                raise ToolError(unknown_argument_error(name, extra, known))
+        return await call(name, arguments, *args, **kwargs)
+
+    manager.call_tool = strict_call
 
 
 _app: Any = None  # assigned here so a reload (the read-only tests) starts over
